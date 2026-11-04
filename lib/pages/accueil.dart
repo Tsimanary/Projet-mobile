@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
-import '../SQLite/sqlite.dart';
-import '../Models/medic.dart';
-import '../Models/acht.dart';
 
+import '../Models/medic.dart';
+import '../SQLite/sqlite.dart';
+import '../core/format.dart';
+import '../core/theme.dart';
+
+/// Tableau de bord : alertes de stock, meilleures ventes, recette cumulée.
 class AccueilPage extends StatefulWidget {
   const AccueilPage({super.key});
 
@@ -10,138 +13,303 @@ class AccueilPage extends StatefulWidget {
   State<AccueilPage> createState() => _AccueilPageState();
 }
 
+class _VenteAgregee {
+  const _VenteAgregee({required this.designation, required this.quantite});
+
+  final String designation;
+  final int quantite;
+}
+
 class _AccueilPageState extends State<AccueilPage> {
-  final DatabaseHelper _dbHelper = DatabaseHelper();
-  late List<Medic> _lowStockMedics = [];
-  late double _totalRevenue = 0.0;
-  late List<Medic> _topSellingMedics = [];
+  static const int seuilStockFaible = 5;
+
+  final DatabaseHelper _base = DatabaseHelper();
+
+  bool _chargement = true;
+  String? _erreur;
+  int _recetteTotale = 0;
+  int _nombreVentes = 0;
+  List<Medic> _ruptures = <Medic>[];
+  List<Medic> _stockFaible = <Medic>[];
+  List<_VenteAgregee> _meilleuresVentes = <_VenteAgregee>[];
 
   @override
   void initState() {
     super.initState();
-    _fetchDashboardData();
+    _charger();
   }
 
-  void _fetchDashboardData() async {
-    List<Medic> medics = await _dbHelper.getAllMedics();
-    List<Achat> achats = await _dbHelper.getAllAchats();
-
-    double totalRevenue = achats.fold(0.0, (sum, achat) =>
-    sum + (achat.nbr * medics.firstWhere((m) => m.numMed == achat.numMed).prixMed));
-
-    List<Medic> lowStockMedics = medics.where((m) => m.stockMed < 5).toList();
-
-    Map<String, int> medicSalesCount = {};
-    for (var achat in achats) {
-      if (medicSalesCount.containsKey(achat.numMed)) {
-        medicSalesCount[achat.numMed] = medicSalesCount[achat.numMed]! + achat.nbr;
-      } else {
-        medicSalesCount[achat.numMed] = achat.nbr;
-      }
+  Future<void> _charger() async {
+    if (mounted) {
+      setState(() {
+        _chargement = true;
+        _erreur = null;
+      });
     }
-    List<Medic> topSellingMedics = medics.where((m) => medicSalesCount.containsKey(m.numMed)).toList()
-      ..sort((a, b) => medicSalesCount[b.numMed]!.compareTo(medicSalesCount[a.numMed]!));
 
-    setState(() {
-      _lowStockMedics = lowStockMedics;
-      _totalRevenue = totalRevenue;
-      _topSellingMedics = topSellingMedics.take(5).toList();
-    });
+    try {
+      final medics = await _base.getAllMedics();
+      final ventesParMedicament = await _base.ventesParMedicament();
+      final recette = await _base.chiffreAffairesTotal();
+
+      final medicsParNumero = <String, Medic>{
+        for (final medic in medics) medic.numMed: medic,
+      };
+
+      final ruptures = medics
+          .where((medic) => medic.stockMed <= 0)
+          .toList(growable: false);
+      final stockFaible = medics
+          .where((medic) =>
+              medic.stockMed > 0 && medic.stockMed <= seuilStockFaible)
+          .toList(growable: false);
+
+      // Les ventes orphelines (médicament supprimé) sont simplement ignorées :
+      // plus aucun `firstWhere` ne peut faire planter l'écran.
+      final ventes = ventesParMedicament.entries
+          .where((entree) => medicsParNumero.containsKey(entree.key))
+          .map((entree) => _VenteAgregee(
+                designation: medicsParNumero[entree.key]!.designMed,
+                quantite: entree.value,
+              ))
+          .toList()
+        ..sort((a, b) => b.quantite.compareTo(a.quantite));
+
+      if (!mounted) return;
+      setState(() {
+        _recetteTotale = recette;
+        _nombreVentes = ventesParMedicament.values
+            .fold<int>(0, (total, quantite) => total + quantite);
+        _ruptures = ruptures;
+        _stockFaible = stockFaible;
+        _meilleuresVentes = ventes.take(5).toList(growable: false);
+        _chargement = false;
+      });
+    } catch (erreur) {
+      if (!mounted) return;
+      setState(() {
+        _erreur = 'Impossible de charger le tableau de bord : $erreur';
+        _chargement = false;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
+    if (_chargement) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_erreur != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const Icon(Icons.error_outline, color: AppColors.rouge, size: 48),
+              const SizedBox(height: 12),
+              Text(_erreur!, textAlign: TextAlign.center),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: _charger,
+                child: const Text('Réessayer'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _charger,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: <Widget>[
+          _carte(
+            titre: 'Recette totale',
+            icone: Icons.account_balance_wallet_outlined,
+            contenu: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  formaterMontant(_recetteTotale),
+                  style: const TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.vertFonce,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '$_nombreVentes unité(s) vendue(s) au total',
+                  style: const TextStyle(color: AppColors.gris),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          _carte(
+            titre: 'Rupture de stock',
+            icone: Icons.remove_shopping_cart_outlined,
+            couleurIcone: AppColors.rouge,
+            contenu: _listeStock(
+              _ruptures,
+              messageVide: 'Aucun médicament en rupture.',
+              couleur: AppColors.rouge,
+              etiquette: 'Rupture',
+            ),
+          ),
+          const SizedBox(height: 12),
+          _carte(
+            titre: 'Stock faible (≤ $seuilStockFaible)',
+            icone: Icons.warning_amber_outlined,
+            couleurIcone: AppColors.orange,
+            contenu: _listeStock(
+              _stockFaible,
+              messageVide: 'Aucune alerte de stock.',
+              couleur: AppColors.orange,
+              etiquette: 'À réapprovisionner',
+            ),
+          ),
+          const SizedBox(height: 12),
+          _carte(
+            titre: 'Top 5 des médicaments vendus',
+            icone: Icons.emoji_events_outlined,
+            couleurIcone: AppColors.bleu,
+            contenu: _listeMeilleuresVentes(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _carte({
+    required String titre,
+    required IconData icone,
+    required Widget contenu,
+    Color couleurIcone = AppColors.vert,
+  }) {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Color(0xFFE0E6E0)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildCard(
-              title: 'Médicaments en Rupture de Stock',
-              content: _buildLowStockList(),
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Icon(icone, color: couleurIcone, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    titre,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 20.0),
-            _buildCard(
-              title: 'Top 5 Médicaments les Plus Vendus',
-              content: _buildTopSellingMedicsList(),
-            ),
-            const SizedBox(height: 20.0),
-            _buildCard(
-              title: 'Recette Totale Accumulée',
-              content: Text(
-                '$_totalRevenue Ar',
-                style: const TextStyle(fontSize: 16.0, fontWeight: FontWeight.bold),
+            const SizedBox(height: 12),
+            contenu,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _listeStock(
+    List<Medic> medics, {
+    required String messageVide,
+    required Color couleur,
+    required String etiquette,
+  }) {
+    if (medics.isEmpty) {
+      return Text(
+        messageVide,
+        style: const TextStyle(color: AppColors.gris),
+      );
+    }
+
+    return Column(
+      children: medics
+          .map(
+            (medic) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: <Widget>[
+                  Expanded(child: Text(medic.designMed)),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: couleur.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '${medic.stockMed} · $etiquette',
+                      style: TextStyle(
+                        color: couleur,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
-      ),
+          )
+          .toList(),
     );
   }
 
-  Widget _buildCard({required String title, required Widget content}) {
-    return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      child: Container(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(fontSize: 18.0, fontWeight: FontWeight.bold, color: Colors.green),
+  Widget _listeMeilleuresVentes() {
+    if (_meilleuresVentes.isEmpty) {
+      return const Text(
+        'Aucune vente enregistrée.',
+        style: TextStyle(color: AppColors.gris),
+      );
+    }
+
+    return Column(
+      children: <Widget>[
+        for (var i = 0; i < _meilleuresVentes.length; i++)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: <Widget>[
+                CircleAvatar(
+                  radius: 12,
+                  backgroundColor: AppColors.vertSurface,
+                  child: Text(
+                    '${i + 1}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.vertFonce,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(child: Text(_meilleuresVentes[i].designation)),
+                Text(
+                  '${formaterNombre(_meilleuresVentes[i].quantite)} vendu(s)',
+                  style: const TextStyle(
+                    color: AppColors.bleu,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 10.0),
-            content,
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLowStockList() {
-    if (_lowStockMedics.isEmpty) {
-      return const Text('Aucun médicament en rupture de stock.', style: TextStyle(color: Colors.grey));
-    }
-
-    return ListView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: _lowStockMedics.length,
-      itemBuilder: (context, index) {
-        Medic medic = _lowStockMedics[index];
-        return ListTile(
-          title: Text('${medic.designMed} (Stock: ${medic.stockMed})'),
-          subtitle: const Text(
-            'Réapprovisionner bientôt',
-            style: TextStyle(color: Colors.red),
           ),
-        );
-      },
-    );
-  }
-
-  Widget _buildTopSellingMedicsList() {
-    if (_topSellingMedics.isEmpty) {
-      return const Text('Aucun médicament vendu.', style: TextStyle(color: Colors.grey));
-    }
-
-    return ListView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: _topSellingMedics.length,
-      itemBuilder: (context, index) {
-        Medic medic = _topSellingMedics[index];
-        return ListTile(
-          title: Text(medic.designMed),
-          subtitle: Text(
-            'Vendu: ${medic.prixMed}',
-            style: const TextStyle(color: Colors.blue),
-          ),
-        );
-      },
+      ],
     );
   }
 }

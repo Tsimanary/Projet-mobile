@@ -1,337 +1,435 @@
 import 'package:flutter/material.dart';
-import 'package:appharmacie/Models/acht.dart'; // Assurez-vous d'importer correctement votre modèle d'Achat
-import 'package:appharmacie/SQLite/sqlite.dart'; // Assurez-vous d'importer correctement votre classe DatabaseHelper
-import 'package:appharmacie/dialog/addAchat.dart';
 
+import '../Models/acht.dart';
+import '../SQLite/sqlite.dart';
+import '../core/exceptions.dart';
+import '../core/feedback.dart';
+import '../core/format.dart';
+import '../core/theme.dart';
+import '../core/validators.dart';
+import '../core/widgets/app_text_field.dart';
+import '../core/widgets/confirm_dialog.dart';
+import '../dialog/addAchat.dart';
+
+/// Historique des ventes.
 class AchatPage extends StatefulWidget {
   const AchatPage({super.key});
 
   @override
-  _AchatPageState createState() => _AchatPageState();
+  State<AchatPage> createState() => _AchatPageState();
 }
 
 class _AchatPageState extends State<AchatPage> {
-  late List<Achat> _achats;
-  late DatabaseHelper _dbHelper;
-  late List<Achat> _filteredAchats;
-  final TextEditingController _searchController = TextEditingController();
+  final DatabaseHelper _base = DatabaseHelper();
+  final TextEditingController _rechercheControleur = TextEditingController();
+
+  List<Achat> _achats = <Achat>[];
+  List<Achat> _achatsFiltres = <Achat>[];
+  List<String> _numerosMedicaments = <String>[];
+  bool _chargement = true;
+  String? _erreur;
 
   @override
   void initState() {
     super.initState();
-    _achats = [];
-    _dbHelper = DatabaseHelper();
-    _filteredAchats = [];
-    _refreshAchats();
-    _searchController.addListener(_filterAchats);
+    _rechercheControleur.addListener(_filtrer);
+    _charger();
   }
 
-  void _filterAchats() {
+  @override
+  void dispose() {
+    _rechercheControleur.dispose();
+    super.dispose();
+  }
+
+  Future<void> _charger() async {
+    try {
+      final achats = await _base.getAllAchats();
+      final numeros = await _base.getAllMedNum();
+      if (!mounted) return;
+      setState(() {
+        _achats = achats;
+        _numerosMedicaments = numeros;
+        _achatsFiltres = _filtrerListe(achats);
+        _chargement = false;
+        _erreur = null;
+      });
+    } catch (erreur) {
+      if (!mounted) return;
+      setState(() {
+        _erreur = 'Chargement impossible : $erreur';
+        _chargement = false;
+      });
+    }
+  }
+
+  List<Achat> _filtrerListe(List<Achat> achats) {
+    final recherche = _rechercheControleur.text.trim().toLowerCase();
+    if (recherche.isEmpty) return achats;
+    return achats
+        .where(
+          (achat) =>
+              achat.numAchat.toLowerCase().contains(recherche) ||
+              achat.numMed.toLowerCase().contains(recherche) ||
+              achat.nomClient.toLowerCase().contains(recherche),
+        )
+        .toList();
+  }
+
+  void _filtrer() {
     setState(() {
-      _filteredAchats = _achats
-          .where((achat) =>
-      achat.numAchat.toLowerCase().contains(_searchController.text.toLowerCase()) ||
-          achat.numMed.toLowerCase().contains(_searchController.text.toLowerCase()) ||
-          achat.nomClient.toLowerCase().contains(_searchController.text.toLowerCase()))
-          .toList();
+      _achatsFiltres = _filtrerListe(_achats);
     });
   }
 
-  void _refreshAchats() async {
-    List<Achat> list = await _dbHelper.getAllAchats();
-    setState(() {
-      _achats = list;
-      _filteredAchats = list;
-    });
+  Future<void> _ajouter() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<bool>(builder: (_) => const AddAchat()),
+    );
+    if (!mounted) return;
+    await _charger();
+  }
+
+  Future<void> _modifier(Achat achat) async {
+    final modifie = await showDialog<Achat>(
+      context: context,
+      builder: (_) => _DialogueModificationAchat(
+        achat: achat,
+        numerosMedicaments: _numerosMedicaments,
+      ),
+    );
+    if (modifie == null || !mounted) return;
+
+    try {
+      await _base.updateAchat(modifie);
+      if (!mounted) return;
+      afficherMessage(context, 'Vente mise à jour.');
+      await _charger();
+    } on StockInsuffisantException catch (erreur) {
+      if (!mounted) return;
+      afficherMessage(context, erreur.toString(), erreur: true);
+    } on EntiteIntrouvableException catch (erreur) {
+      if (!mounted) return;
+      afficherMessage(context, erreur.toString(), erreur: true);
+    } catch (erreur) {
+      if (!mounted) return;
+      afficherMessage(context, 'Mise à jour impossible : $erreur', erreur: true);
+    }
+  }
+
+  Future<void> _supprimer(Achat achat) async {
+    final confirme = await confirmerAction(
+      context,
+      titre: 'Supprimer la vente',
+      message:
+          'Supprimer la ligne de la vente ${achat.numAchat} '
+          '(${achat.numMed} × ${achat.nbr}) ?\n'
+          'Le stock sera recrédité de ${achat.nbr} unité(s).',
+      libelleConfirmer: 'Supprimer',
+    );
+    if (!confirme || !mounted) return;
+
+    try {
+      await _base.deleteAchat(achat.id!);
+      if (!mounted) return;
+      afficherMessage(context, 'Vente supprimée, stock recrédité.');
+      await _charger();
+    } catch (erreur) {
+      if (!mounted) return;
+      afficherMessage(context, 'Suppression impossible : $erreur', erreur: true);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Column(
-        children: [
+        children: <Widget>[
           Padding(
-            padding: const EdgeInsets.all(8.0),
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                labelText: 'Recherche',
-                prefixIcon: const Icon(Icons.search, color: Colors.green),
-                filled: true,
-                fillColor: Colors.green.withOpacity(0.2),
-                focusedBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                ),
+              controller: _rechercheControleur,
+              decoration: const InputDecoration(
+                labelText: 'Rechercher (n° vente, médicament, client)',
+                prefixIcon: Icon(Icons.search),
               ),
             ),
           ),
-          Expanded(
-            child: _filteredAchats.isEmpty
-                ? const Center(
-              child: Text('Pas d\'achats ajoutés'),
-            )
-                : ListView.builder(
-              itemCount: _filteredAchats.length,
-              itemBuilder: (context, index) {
-                var achat = _filteredAchats[index];
-                return Container(
-                  decoration: BoxDecoration(
-                    color: Colors.green.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-                  child: ListTile(
-                    title: Text(
-                      'Achat #${achat.numAchat}',
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                    subtitle: Text(
-                      'Médicament: ${achat.numMed}, Client: ${achat.nomClient}, Quantité: ${achat.nbr}, Date: ${achat.dateAchat}',
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.edit, color: Colors.blue),
-                          onPressed: () {
-                            _editAchat(achat);
-                          },
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.pink),
-                          onPressed: () {
-                            _confirmDeleteAchat(achat);
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
+          Expanded(child: _contenu()),
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const AddAchat()),
-          ).then((_) {
-            _refreshAchats();
-          });
-        },
-        backgroundColor: Colors.green,
+        tooltip: 'Nouvelle vente',
+        onPressed: _ajouter,
         child: const Icon(Icons.add),
       ),
     );
   }
 
-  void _editAchat(Achat achat) {
-    var _achatNumAchatController = TextEditingController(text: achat.numAchat);
-    var _achatMedController = TextEditingController(text: achat.numMed);
-    var _achatClientController = TextEditingController(text: achat.nomClient);
-    var _achatQuantiteController = TextEditingController(text: achat.nbr.toString());
-    var _achatDateController = TextEditingController(text: achat.dateAchat);
+  Widget _contenu() {
+    if (_chargement) {
+      return const Center(child: CircularProgressIndicator());
+    }
 
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12.0),
-              border: Border.all(
-                color: Colors.green.withOpacity(0.5),
-                width: 3.0,
+    if (_erreur != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(_erreur!, textAlign: TextAlign.center),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: () {
+                  setState(() => _chargement = true);
+                  _charger();
+                },
+                child: const Text('Réessayer'),
               ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_achatsFiltres.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            _achats.isEmpty
+                ? "Aucune vente enregistrée.\nAppuyez sur + pour en créer une."
+                : 'Aucun résultat pour cette recherche.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppColors.gris),
+          ),
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _charger,
+      child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+        physics: const AlwaysScrollableScrollPhysics(),
+        itemCount: _achatsFiltres.length,
+        itemBuilder: (context, index) {
+          final achat = _achatsFiltres[index];
+          return Card(
+            elevation: 0,
+            margin: const EdgeInsets.only(bottom: 8),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: const BorderSide(color: Color(0xFFE0E6E0)),
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
+            child: ListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              title: Text(
+                'Vente ${achat.numAchat}',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              subtitle: Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  '${achat.numMed} × ${achat.nbr} · ${achat.nomClient} · '
+                  '${achat.dateAchat}',
+                ),
+              ),
+              trailing: Row(
                 mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text(
-                    'Modifier Achat',
-                    style: TextStyle(
-                      fontSize: 20.0,
-                      fontWeight: FontWeight.bold,
-                    ),
+                children: <Widget>[
+                  IconButton(
+                    tooltip: 'Modifier',
+                    icon: const Icon(Icons.edit_outlined, color: AppColors.bleu),
+                    onPressed: () => _modifier(achat),
                   ),
-                  const SizedBox(height: 16.0),
-                  TextField(
-                    controller: _achatNumAchatController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      labelText: 'Numéro Achat',
-                      filled: true,
-                      fillColor: Colors.green.withOpacity(0.2),
-                    ),
-                  ),
-                  const SizedBox(height: 16.0),
-                  TextField(
-                    controller: _achatMedController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      labelText: 'Numéro Médicament',
-                      filled: true,
-                      fillColor: Colors.green.withOpacity(0.2),
-                    ),
-                  ),
-                  const SizedBox(height: 20.0),
-                  TextField(
-                    controller: _achatClientController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      labelText: 'Nom Client',
-                      filled: true,
-                      fillColor: Colors.green.withOpacity(0.2),
-                    ),
-                  ),
-                  const SizedBox(height: 20.0),
-                  TextField(
-                    controller: _achatQuantiteController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      labelText: 'Quantité',
-                      filled: true,
-                      fillColor: Colors.green.withOpacity(0.2),
-                    ),
-                    keyboardType: TextInputType.number,
-                  ),
-                  const SizedBox(height: 20.0),
-                  TextField(
-                    controller: _achatDateController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      labelText: 'Date',
-                      filled: true,
-                      fillColor: Colors.green.withOpacity(0.2),
-                    ),
-                  ),
-                  const SizedBox(height: 20.0),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton(
-                        style: TextButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          backgroundColor: Colors.blue,
-                        ),
-                        child: const Text('Annuler'),
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                        },
-                      ),
-                      const SizedBox(width: 8.0),
-                      TextButton(
-                        style: TextButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          backgroundColor: Colors.green,
-                        ),
-                        child: const Text('Enregistrer'),
-                        onPressed: () {
-                          int quantite = int.parse(_achatQuantiteController.text);
-                          _updateAchat(
-                            achat.id!,
-                            _achatNumAchatController.text,
-                            _achatMedController.text,
-                            _achatClientController.text,
-                            quantite,
-                            _achatDateController.text,
-                          );
-                          Navigator.of(context).pop();
-                        },
-                      ),
-                    ],
+                  IconButton(
+                    tooltip: 'Supprimer',
+                    icon: const Icon(Icons.delete_outline, color: AppColors.rouge),
+                    onPressed: () => _supprimer(achat),
                   ),
                 ],
               ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
+}
 
-  Future<void> _confirmDeleteAchat(Achat achat) async {
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: false, // utilisateur doit cliquer sur un des boutons pour fermer la boîte de dialogue
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Confirmer la suppression'),
-          content: const SingleChildScrollView(
-            child: ListBody(
-              children: <Widget>[
-                Text('Êtes-vous sûr de vouloir supprimer cet achat ?'),
-              ],
-            ),
-          ),
-          backgroundColor: Colors.white, // couleur de fond de la boîte de dialogue
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8.0),
-            side: BorderSide(color: Colors.green.withOpacity(0.5)), // bordure verte
-          ),
-          actions: <Widget>[
-            TextButton(
-              style: TextButton.styleFrom(
-                backgroundColor: Colors.blue, // bouton bleu pour "Annuler"
-              ),
-              child: const Text(
-                'Annuler',
-                style: TextStyle(color: Colors.white),
-              ),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-            ),
-            TextButton(
-              style: TextButton.styleFrom(
-                backgroundColor: Colors.pink, // bouton rose pour "Supprimer"
-              ),
-              child: const Text(
-                'Supprimer',
-                style: TextStyle(color: Colors.white),
-              ),
-              onPressed: () async {
-                await _deleteAchat(achat.id!);
-                Navigator.of(context).pop();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
+/// Dialogue de modification d'une ligne de vente.
+class _DialogueModificationAchat extends StatefulWidget {
+  const _DialogueModificationAchat({
+    required this.achat,
+    required this.numerosMedicaments,
+  });
 
-  Future<void> _updateAchat(int id, String numAchat, String numMed, String nomClient, int nbr, String dateAchat) async {
-    Achat achat = Achat(
-      id: id,
-      numAchat: numAchat,
-      numMed: numMed,
-      nomClient: nomClient,
-      nbr: nbr,
-      dateAchat: dateAchat,
-    );
-    await _dbHelper.updateAchat(achat);
-    _refreshAchats();
-  }
+  final Achat achat;
+  final List<String> numerosMedicaments;
 
-  Future<void> _deleteAchat(int id) async {
-    await _dbHelper.deleteAchat(id);
-    _refreshAchats();
+  @override
+  State<_DialogueModificationAchat> createState() =>
+      _DialogueModificationAchatState();
+}
+
+class _DialogueModificationAchatState extends State<_DialogueModificationAchat> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _numeroControleur;
+  late final TextEditingController _clientControleur;
+  late final TextEditingController _quantiteControleur;
+  late final TextEditingController _dateControleur;
+  late String? _medicamentSelectionne;
+  late List<String> _numeros;
+
+  @override
+  void initState() {
+    super.initState();
+    _numeroControleur = TextEditingController(text: widget.achat.numAchat);
+    _clientControleur = TextEditingController(text: widget.achat.nomClient);
+    _quantiteControleur =
+        TextEditingController(text: widget.achat.nbr.toString());
+    _dateControleur = TextEditingController(text: widget.achat.dateAchat);
+    _numeros = List<String>.from(widget.numerosMedicaments);
+    if (!_numeros.contains(widget.achat.numMed)) {
+      _numeros.insert(0, widget.achat.numMed);
+    }
+    _medicamentSelectionne = widget.achat.numMed;
   }
 
   @override
   void dispose() {
-    _searchController.dispose();
+    _numeroControleur.dispose();
+    _clientControleur.dispose();
+    _quantiteControleur.dispose();
+    _dateControleur.dispose();
     super.dispose();
+  }
+
+  Future<void> _choisirDate() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: analyserDate(_dateControleur.text) ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2101),
+    );
+    if (date == null || !mounted) return;
+    setState(() {
+      _dateControleur.text = formaterDate(date);
+    });
+  }
+
+  void _valider() {
+    if (!_formKey.currentState!.validate()) return;
+    if (_medicamentSelectionne == null) return;
+
+    final medicamentChange = _medicamentSelectionne != widget.achat.numMed;
+
+    Navigator.of(context).pop(
+      Achat(
+        id: widget.achat.id,
+        numAchat: _numeroControleur.text.trim(),
+        numMed: _medicamentSelectionne!,
+        nomClient: _clientControleur.text.trim(),
+        dateAchat: _dateControleur.text.trim(),
+        nbr: Validators.versEntier(_quantiteControleur.text) ?? 0,
+        // Le prix figé n'est conservé que si le médicament ne change pas.
+        prixUnitaire:
+            medicamentChange ? null : widget.achat.prixUnitaire,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Modifier la vente'),
+      content: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              ChampTexte(
+                controleur: _numeroControleur,
+                label: 'Numéro de vente',
+                icone: Icons.receipt_long_outlined,
+                validateur: (valeur) => Validators.obligatoire(
+                  valeur,
+                  champ: 'Le numéro de vente',
+                ),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: _medicamentSelectionne,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Médicament',
+                  prefixIcon: Icon(Icons.medication_outlined),
+                ),
+                items: _numeros
+                    .map(
+                      (numero) => DropdownMenuItem<String>(
+                        value: numero,
+                        child: Text(numero),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (valeur) {
+                  setState(() => _medicamentSelectionne = valeur);
+                },
+                validator: (valeur) =>
+                    valeur == null ? 'Sélectionnez un médicament.' : null,
+              ),
+              const SizedBox(height: 12),
+              ChampTexte(
+                controleur: _clientControleur,
+                label: 'Nom du client',
+                icone: Icons.person_outline,
+                textCapitalization: TextCapitalization.words,
+                validateur: (valeur) => Validators.obligatoire(
+                  valeur,
+                  champ: 'Le nom du client',
+                ),
+              ),
+              const SizedBox(height: 12),
+              ChampTexte(
+                controleur: _quantiteControleur,
+                label: 'Quantité vendue',
+                icone: Icons.numbers,
+                clavier: TextInputType.number,
+                formateurs: Saisies.chiffres,
+                validateur: (valeur) =>
+                    Validators.entier(valeur, champ: 'La quantité'),
+              ),
+              const SizedBox(height: 12),
+              ChampTexte(
+                controleur: _dateControleur,
+                label: 'Date de vente',
+                icone: Icons.calendar_today_outlined,
+                lectureSeule: true,
+                onTap: _choisirDate,
+                validateur: (valeur) => Validators.obligatoire(
+                  valeur,
+                  champ: 'La date de vente',
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Annuler'),
+        ),
+        FilledButton(
+          onPressed: _valider,
+          child: const Text('Enregistrer'),
+        ),
+      ],
+    );
   }
 }

@@ -1,7 +1,11 @@
-import 'package:appharmacie/Authentification/login.dart';
-import 'package:appharmacie/Models/users.dart';
-import 'package:appharmacie/SQLite/sqlite.dart';
 import 'package:flutter/material.dart';
+
+import '../Models/users.dart';
+import '../SQLite/sqlite.dart';
+import '../core/exceptions.dart';
+import '../core/theme.dart';
+import '../core/validators.dart';
+import '../core/widgets/app_text_field.dart';
 
 class SignUp extends StatefulWidget {
   const SignUp({super.key});
@@ -11,161 +15,162 @@ class SignUp extends StatefulWidget {
 }
 
 class _SignUpState extends State<SignUp> {
+  final _formKey = GlobalKey<FormState>();
+  final _nomControleur = TextEditingController();
+  final _motDePasseControleur = TextEditingController();
+  final _confirmationControleur = TextEditingController();
+  final _baseDeDonnees = DatabaseHelper();
 
-  final username = TextEditingController();
-  final password = TextEditingController();
-  final confirmpassword = TextEditingController();
+  bool _motDePasseVisible = false;
+  bool _enregistrementEnCours = false;
+  String? _messageErreur;
 
-  final formkey = GlobalKey<FormState>();
+  @override
+  void dispose() {
+    _nomControleur.dispose();
+    _motDePasseControleur.dispose();
+    _confirmationControleur.dispose();
+    super.dispose();
+  }
 
-  bool isVisible = false;
+  Future<void> _creerCompte() async {
+    if (!_formKey.currentState!.validate()) return;
+    FocusScope.of(context).unfocus();
+
+    setState(() {
+      _enregistrementEnCours = true;
+      _messageErreur = null;
+    });
+
+    try {
+      await _baseDeDonnees.signup(
+        Users(
+          usrName: _nomControleur.text.trim(),
+          usrPassword: _motDePasseControleur.text,
+        ),
+      );
+
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on UtilisateurDejaExisteException catch (erreur) {
+      if (!mounted) return;
+      setState(() {
+        _enregistrementEnCours = false;
+        _messageErreur = erreur.toString();
+      });
+    } catch (erreur) {
+      if (!mounted) return;
+      setState(() {
+        _enregistrementEnCours = false;
+        _messageErreur = "Impossible de créer le compte : $erreur";
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return  Scaffold(
-      body: Center(
+    return Scaffold(
+      appBar: AppBar(title: const Text('Créer un compte')),
+      body: SafeArea(
         child: SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Form(
-              key: formkey,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-
-                  const ListTile(
-                    title: Text("Register New Account",
-                    style: TextStyle(fontSize: 45, fontWeight: FontWeight.bold),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    const Text(
+                      'Créez le compte qui administrera cette officine.',
+                      style: TextStyle(color: AppColors.gris),
                     ),
-                  ),
-
-                  // As we assigned our controller to the textformfields
-                  Container(
-                    margin: const EdgeInsets.all(10),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      color: Colors.green.withOpacity(.2),
+                    const SizedBox(height: 20),
+                    ChampTexte(
+                      controleur: _nomControleur,
+                      label: "Nom d'utilisateur",
+                      icone: Icons.person_outline,
+                      validateur: Validators.nomUtilisateur,
                     ),
-                    child:  TextFormField(
-                      controller: username,
-                      validator: (value) {
-                        if (value!.isEmpty){
-                          return"username is required";
+                    const SizedBox(height: 16),
+                    ChampTexte(
+                      controleur: _motDePasseControleur,
+                      label: 'Mot de passe',
+                      icone: Icons.lock_outline,
+                      obscur: !_motDePasseVisible,
+                      validateur: Validators.motDePasse,
+                      suffixe: IconButton(
+                        tooltip: _motDePasseVisible
+                            ? 'Masquer le mot de passe'
+                            : 'Afficher le mot de passe',
+                        onPressed: () {
+                          setState(() {
+                            _motDePasseVisible = !_motDePasseVisible;
+                          });
+                        },
+                        icon: Icon(
+                          _motDePasseVisible
+                              ? Icons.visibility_off
+                              : Icons.visibility,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    ChampTexte(
+                      controleur: _confirmationControleur,
+                      label: 'Confirmer le mot de passe',
+                      icone: Icons.lock_outline,
+                      obscur: !_motDePasseVisible,
+                      validateur: (valeur) {
+                        if (valeur == null || valeur.isEmpty) {
+                          return 'Veuillez confirmer le mot de passe.';
+                        }
+                        if (valeur != _motDePasseControleur.text) {
+                          return 'Les mots de passe ne correspondent pas.';
                         }
                         return null;
                       },
-                      decoration: const InputDecoration(
-                        icon: Icon(Icons.person),
-                        border: InputBorder.none,
-                        hintText: "Username", // corrected 'label' to 'labelText'
+                    ),
+                    if (_messageErreur != null) ...<Widget>[
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppColors.rougeSurface,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          _messageErreur!,
+                          style: const TextStyle(color: AppColors.rouge),
+                        ),
                       ),
-                    ),
-                  ),
-                  //Password field
-                  Container(
-                    margin: const EdgeInsets.all(10),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      color: Colors.green.withOpacity(.2),
-                    ),
-                    child:  TextFormField(
-                      controller: password,
-                      validator: (value) {
-                        if (value!.isEmpty){
-                          return"password is required";
-                        }
-                        return null;
-                      },
-                      obscureText: !isVisible,
-                      decoration: InputDecoration(
-                          icon: const Icon(Icons.lock),
-                          border: InputBorder.none,
-                          hintText: "Password",
-                          suffixIcon: IconButton(
-                              onPressed: () {
-                                setState(() {
-                                  isVisible = !isVisible;
-                                });
-                              }, icon: Icon(isVisible
-                              ? Icons.visibility
-                              : Icons.visibility_off
-                          ))
-                      ),
-                    ),
-                  ),
-
-                  //Confirm password
-                  Container(
-                    margin: const EdgeInsets.all(10),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      color: Colors.green.withOpacity(.2),
-                    ),
-                    child:  TextFormField(
-                      controller: confirmpassword,
-                      validator: (value) {
-                        if (value!.isEmpty){
-                          return"password is required";
-                        }else if (password.text != confirmpassword.text){
-                          return "password don't match";
-                        }
-                        return null;
-                      },
-                      obscureText: !isVisible,
-                      decoration: InputDecoration(
-                          icon: const Icon(Icons.lock),
-                          border: InputBorder.none,
-                          hintText: "Password",
-                          suffixIcon: IconButton(
-                              onPressed: () {
-                                setState(() {
-                                  isVisible = !isVisible;
-                                });
-                              }, icon: Icon(isVisible
-                              ? Icons.visibility
-                              : Icons.visibility_off
-                          ))
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 10),
-                  //Login button
-                  Container(
-                    height: 55,
-                    width: MediaQuery.of(context).size.width * .9,
-                    decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(8),
-                        color: Colors.green),
-                    child: TextButton(onPressed: () {
-                      if(formkey.currentState!.validate()){
-                        //Login method will be here
-                        final db = DatabaseHelper();
-                        db.signup(Users(usrName: username.text, usrPassword: password.text))
-                            .whenComplete((){
-                              Navigator.push(context, MaterialPageRoute(
-                                  builder: (context)=> const LoginPage()));
-                        });
-                      }
-                    },
-                        child: const Text("SIGN UP",
-                          style: TextStyle(color: Colors.white),)),
-                  ),
-
-                  //Sign up button
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Text("Vous avez de compte ? "),
-                      TextButton(onPressed: () {
-                        //Navigate to sign up
-                        Navigator.push(context, MaterialPageRoute(builder: (context)=>const LoginPage()));
-                      }, child: const Text("LOGIN"))
                     ],
-                  )
-                ],
+                    const SizedBox(height: 24),
+                    FilledButton(
+                      onPressed: _enregistrementEnCours ? null : _creerCompte,
+                      child: _enregistrementEnCours
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.white,
+                                ),
+                              ),
+                            )
+                          : const Text('CRÉER LE COMPTE'),
+                    ),
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: _enregistrementEnCours
+                          ? null
+                          : () => Navigator.of(context).pop(),
+                      child: const Text('J\'ai déjà un compte'),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

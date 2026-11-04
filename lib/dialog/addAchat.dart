@@ -1,12 +1,23 @@
 import 'package:flutter/material.dart';
-import 'package:pdf/widgets.dart' as pdfLib;
-import 'package:pdf/pdf.dart';
+import 'package:intl/intl.dart';
 import 'package:printing/printing.dart';
-import '../Models/medic.dart';
+
 import '../Models/acht.dart';
+import '../Models/medic.dart';
 import '../SQLite/sqlite.dart';
+import '../core/exceptions.dart';
+import '../core/feedback.dart';
+import '../core/format.dart';
+import '../core/theme.dart';
+import '../core/validators.dart';
+import '../core/widgets/app_text_field.dart';
 import '../pages/pdf_utils.dart';
 
+/// Saisie d'une vente multi-lignes.
+///
+/// La vente est enregistrée en **une seule transaction** : soit toutes les
+/// lignes passent, soit aucune. La facture est construite à partir des
+/// lignes réellement enregistrées.
 class AddAchat extends StatefulWidget {
   const AddAchat({super.key});
 
@@ -15,370 +26,429 @@ class AddAchat extends StatefulWidget {
 }
 
 class _AddAchatState extends State<AddAchat> {
-  final DatabaseHelper _dbHelper = DatabaseHelper();
-  late List<Medic> _medics;
-  late List<Medic> _filteredMedics; // Liste filtrée des médicaments
-  late Map<String, TextEditingController> _quantityControllers;
+  final _formKey = GlobalKey<FormState>();
+  final _numeroControleur = TextEditingController();
+  final _clientControleur = TextEditingController();
+  final _dateControleur = TextEditingController();
+  final _rechercheControleur = TextEditingController();
+  final DatabaseHelper _base = DatabaseHelper();
 
-  final TextEditingController _numAchatController = TextEditingController();
-  final TextEditingController _nomClientController = TextEditingController();
-  final TextEditingController _dateAchatController = TextEditingController();
-  final TextEditingController _searchController = TextEditingController();
+  final Map<String, TextEditingController> _quantites =
+      <String, TextEditingController>{};
 
-  double _totalPrice = 0.0;
-  Medic? _selectedMedic; // Le médicament sélectionné depuis la recherche
+  List<Medic> _medicaments = <Medic>[];
+  List<Medic> _medicamentsFiltres = <Medic>[];
+  bool _chargement = true;
+  bool _enregistrementEnCours = false;
+  String? _erreurChargement;
+  int _total = 0;
 
   @override
   void initState() {
     super.initState();
-    _medics = [];
-    _filteredMedics = []; // Initialisation de la liste filtrée
-    _quantityControllers = {};
-    _fetchMedics();
+    final maintenant = DateTime.now();
+    _numeroControleur.text =
+        'V-${DateFormat('yyyyMMdd').format(maintenant)}-${DateFormat('HHmmss').format(maintenant)}';
+    _dateControleur.text = DateFormat('dd/MM/yyyy').format(maintenant);
+    _rechercheControleur.addListener(_filtrer);
+    _chargerMedicaments();
   }
 
-  void _fetchMedics() async {
-    List<Medic> medics = await _dbHelper.getAllMedics();
-    setState(() {
-      _medics = medics;
-      _filteredMedics = medics; // Initialisation des médicaments filtrés
-      for (var medic in _medics) {
-        _quantityControllers[medic.numMed] = TextEditingController();
-      }
-    });
-  }
-
-  void _updateTotalPrice() {
-    double totalPrice = 0.0;
-    for (var medic in _medics) {
-      String quantityText = _quantityControllers[medic.numMed]?.text ?? '';
-      if (quantityText.isNotEmpty) {
-        int quantity = int.parse(quantityText);
-        totalPrice += quantity * medic.prixMed;
-      }
+  @override
+  void dispose() {
+    _numeroControleur.dispose();
+    _clientControleur.dispose();
+    _dateControleur.dispose();
+    _rechercheControleur.dispose();
+    for (final controleur in _quantites.values) {
+      controleur.dispose();
     }
-    setState(() {
-      _totalPrice = totalPrice;
-    });
+    super.dispose();
   }
 
-  void _saveAchat() async {
-    if (_numAchatController.text.isEmpty || _nomClientController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Veuillez remplir tous les champs obligatoires.'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-
-    bool stockInsufficient = false;
-
-    for (var medic in _medics) {
-      String quantityText = _quantityControllers[medic.numMed]?.text ?? '';
-      if (quantityText.isNotEmpty) {
-        int quantity = int.parse(quantityText);
-
-        if (quantity > medic.stockMed) {
-          stockInsufficient = true;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Stock insuffisant pour ${medic.designMed}. Disponible: ${medic.stockMed}'),
-              backgroundColor: Colors.red,
-            ),
+  Future<void> _chargerMedicaments() async {
+    try {
+      final medicaments = await _base.getAllMedics();
+      if (!mounted) return;
+      setState(() {
+        _medicaments = medicaments;
+        _medicamentsFiltres = medicaments;
+        for (final medicament in medicaments) {
+          _quantites.putIfAbsent(
+            medicament.numMed,
+            () => TextEditingController(),
           );
-        } else {
-          Achat achat = Achat(
-            numAchat: _numAchatController.text,
-            numMed: medic.numMed,
-            nomClient: _nomClientController.text,
-            dateAchat: _dateAchatController.text,
-            nbr: quantity,
-          );
-          await _dbHelper.insertAchat(achat);
         }
-      }
-    }
-
-    if (!stockInsufficient) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Achat enregistré avec succès.'),
-          backgroundColor: Colors.green,
-        ),
-      );
-
-      // Générer la facture après l'enregistrement de l'achat
-      _showInvoice();
-
-      // Attendre 1 seconde avant de revenir à l'écran précédent
-      Future.delayed(const Duration(seconds: 1), () {
-        Navigator.pop(context);
+        _chargement = false;
+      });
+      _recalculerTotal();
+    } catch (erreur) {
+      if (!mounted) return;
+      setState(() {
+        _erreurChargement = 'Chargement impossible : $erreur';
+        _chargement = false;
       });
     }
   }
 
-
-  void _showInvoice() {
-    pdfLib.Document pdf = generateInvoicePdf(
-      _numAchatController.text,
-      _nomClientController.text,
-      _dateAchatController.text,
-      _medics,
-      _quantityControllers,
-      _totalPrice,
-    );
-
-    Printing.layoutPdf(
-      onLayout: (PdfPageFormat format) async => pdf.save(),
-    );
+  void _filtrer() {
+    final recherche = _rechercheControleur.text.trim().toLowerCase();
+    setState(() {
+      _medicamentsFiltres = recherche.isEmpty
+          ? _medicaments
+          : _medicaments
+              .where(
+                (medicament) =>
+                    medicament.designMed.toLowerCase().contains(recherche) ||
+                    medicament.numMed.toLowerCase().contains(recherche),
+              )
+              .toList();
+    });
   }
 
-  void _filterMedics(String query) {
-    List<Medic> filteredList = _medics.where((medic) {
-      return medic.designMed.toLowerCase().contains(query.toLowerCase());
-    }).toList();
+  int _quantiteDe(Medic medicament) =>
+      Validators.versEntier(_quantites[medicament.numMed]?.text) ?? 0;
 
+  void _recalculerTotal() {
+    var total = 0;
+    for (final medicament in _medicaments) {
+      final quantite = _quantiteDe(medicament);
+      if (quantite > 0) {
+        total += medicament.prixMed * quantite;
+      }
+    }
+    if (!mounted) return;
+    setState(() => _total = total);
+  }
+
+  Future<void> _choisirDate() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2101),
+    );
+    if (date == null || !mounted) return;
     setState(() {
-      _filteredMedics = filteredList;
+      _dateControleur.text = DateFormat('dd/MM/yyyy').format(date);
     });
+  }
+
+  Future<void> _enregistrer() async {
+    if (!_formKey.currentState!.validate()) return;
+    FocusScope.of(context).unfocus();
+
+    final lignes = <Achat>[];
+    final erreursStock = <String>[];
+
+    for (final medicament in _medicaments) {
+      final quantite = _quantiteDe(medicament);
+      if (quantite <= 0) continue;
+
+      if (quantite > medicament.stockMed) {
+        erreursStock.add(
+          '${medicament.designMed} (stock : ${medicament.stockMed})',
+        );
+      }
+
+      lignes.add(
+        Achat(
+          numAchat: _numeroControleur.text.trim(),
+          numMed: medicament.numMed,
+          nomClient: _clientControleur.text.trim(),
+          dateAchat: _dateControleur.text.trim(),
+          nbr: quantite,
+          prixUnitaire: medicament.prixMed,
+        ),
+      );
+    }
+
+    if (lignes.isEmpty) {
+      afficherMessage(
+        context,
+        'Saisissez au moins une quantité.',
+        erreur: true,
+      );
+      return;
+    }
+
+    if (erreursStock.isNotEmpty) {
+      afficherMessage(
+        context,
+        'Stock insuffisant : ${erreursStock.join(', ')}.',
+        erreur: true,
+      );
+      return;
+    }
+
+    setState(() => _enregistrementEnCours = true);
+
+    try {
+      await _base.insertAchats(lignes);
+      if (!mounted) return;
+
+      setState(() => _enregistrementEnCours = false);
+      afficherMessage(
+        context,
+        'Vente enregistrée : ${formaterMontant(_total)}.',
+      );
+
+      await _imprimerFacture(lignes);
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on StockInsuffisantException catch (erreur) {
+      if (!mounted) return;
+      setState(() => _enregistrementEnCours = false);
+      afficherMessage(context, erreur.toString(), erreur: true);
+    } on EntiteIntrouvableException catch (erreur) {
+      if (!mounted) return;
+      setState(() => _enregistrementEnCours = false);
+      afficherMessage(context, erreur.toString(), erreur: true);
+    } catch (erreur) {
+      if (!mounted) return;
+      setState(() => _enregistrementEnCours = false);
+      afficherMessage(
+        context,
+        "Échec de l'enregistrement : $erreur",
+        erreur: true,
+      );
+    }
+  }
+
+  Future<void> _imprimerFacture(List<Achat> lignes) async {
+    final designations = <String, String>{
+      for (final medicament in _medicaments)
+        medicament.numMed: medicament.designMed,
+    };
+
+    final lignesFacture = lignes
+        .map(
+          (ligne) => LigneFacture(
+            designation: designations[ligne.numMed] ?? ligne.numMed,
+            numMed: ligne.numMed,
+            quantite: ligne.nbr,
+            prixUnitaire: ligne.prixUnitaire ?? 0,
+          ),
+        )
+        .toList();
+
+    final total = lignesFacture.fold<int>(
+      0,
+      (somme, ligne) => somme + ligne.montant,
+    );
+
+    try {
+      final document = generateInvoicePdf(
+        numAchat: _numeroControleur.text.trim(),
+        nomClient: _clientControleur.text.trim(),
+        dateAchat: _dateControleur.text.trim(),
+        lignes: lignesFacture,
+        total: total,
+      );
+      await Printing.layoutPdf(
+        onLayout: (format) async => document.save(),
+      );
+    } catch (_) {
+      // L'impression est optionnelle : un échec ne doit jamais annuler
+      // une vente déjà enregistrée.
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    List<Medic> displayMedics = _selectedMedic != null ? [_selectedMedic!] : _filteredMedics;
+    if (_chargement) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Nouvelle vente')),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_erreurChargement != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Nouvelle vente')),
+        body: Center(child: Text(_erreurChargement!, textAlign: TextAlign.center)),
+      );
+    }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Ajouter Achat',
-          style: TextStyle(
-            color: Colors.white,
+      appBar: AppBar(title: const Text('Nouvelle vente')),
+      body: SafeArea(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            children: <Widget>[
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: <Widget>[
+                    ChampTexte(
+                      controleur: _numeroControleur,
+                      label: 'Numéro de vente',
+                      icone: Icons.receipt_long_outlined,
+                      validateur: (valeur) => Validators.obligatoire(
+                        valeur,
+                        champ: 'Le numéro de vente',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ChampTexte(
+                      controleur: _clientControleur,
+                      label: 'Nom du client',
+                      icone: Icons.person_outline,
+                      textCapitalization: TextCapitalization.words,
+                      validateur: (valeur) => Validators.obligatoire(
+                        valeur,
+                        champ: 'Le nom du client',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ChampTexte(
+                      controleur: _dateControleur,
+                      label: 'Date de vente',
+                      icone: Icons.calendar_today_outlined,
+                      lectureSeule: true,
+                      onTap: _choisirDate,
+                      validateur: (valeur) => Validators.obligatoire(
+                        valeur,
+                        champ: 'La date de vente',
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    ChampTexte(
+                      controleur: _rechercheControleur,
+                      label: 'Rechercher un médicament',
+                      icone: Icons.search,
+                    ),
+                    const SizedBox(height: 16),
+                    if (_medicamentsFiltres.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 24),
+                        child: Text(
+                          'Aucun médicament ne correspond à la recherche.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: AppColors.gris),
+                        ),
+                      )
+                    else
+                      for (final medicament in _medicamentsFiltres)
+                        _ligneMedicament(medicament),
+                  ],
+                ),
+              ),
+              _piedDePage(),
+            ],
           ),
         ),
-        backgroundColor: Colors.green,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            TextField(
-              controller: _numAchatController,
-              decoration: InputDecoration(
-                labelText: 'Numéro d\'Achat',
-                filled: true,
-                fillColor: Colors.green.withOpacity(0.2), // Fond vert opacité
-                focusedBorder: const OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.green, width: 2.0), // Bordure verte quand focus
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0), // Bordure verte quand inactif
-                ),
-              ),
-            ),
-            const SizedBox(height: 20.0),
-            TextField(
-              controller: _nomClientController,
-              decoration: InputDecoration(
-                labelText: 'Nom du Client',
-                filled: true,
-                fillColor: Colors.green.withOpacity(0.2), // Fond vert opacité
-                focusedBorder: const OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.green, width: 2.0), // Bordure verte quand focus
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0), // Bordure verte quand inactif
-                ),
-              ),
-            ),
-            const SizedBox(height: 20.0),
-            TextField(
-              controller: _dateAchatController,
-              decoration: InputDecoration(
-                labelText: 'Date d\'Achat',
-                filled: true,
-                fillColor: Colors.green.withOpacity(0.2), // Fond vert opacité
-                focusedBorder: const OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.green, width: 2.0), // Bordure verte quand focus
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0), // Bordure verte quand inactif
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                labelText: 'Rechercher Médicament',
-                prefixIcon: const Icon(Icons.search, color: Colors.pinkAccent), // Icône de recherche en rose
-                filled: true,
-                fillColor: Colors.pinkAccent.withOpacity(0.2), // Fond rose opacité
-                focusedBorder: const OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.pink, width: 2.0), // Bordure rose quand focus
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.pink.withOpacity(0.5), width: 2.0), // Bordure rose quand inactif
-                ),
-              ),
-              onChanged: (value) {
-                _filterMedics(value);
-              },
-            ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: ListView.builder(
-                itemCount: displayMedics.length,
-                itemBuilder: (BuildContext context, int index) {
-                  final medic = displayMedics[index];
-                  final controller = _quantityControllers[medic.numMed];
-                  return Column(
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(child: Text('${medic.designMed} (Num: ${medic.numMed})')),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            flex: 2,
-                            child: TextField(
-                              controller: controller,
-                              keyboardType: TextInputType.number,
-                              decoration: InputDecoration(
-                                labelText: 'Quantité',
-                                filled: true,
-                                fillColor: Colors.green.withOpacity(0.2),
-                                focusedBorder: const OutlineInputBorder(
-                                  borderSide: BorderSide(color: Colors.green, width: 2.0),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                                ),
-                              ),
-                              onChanged: (value) {
-                                _updateTotalPrice();
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12), // Ajouter de l'espace entre les éléments
-                    ],
-                  );
-                },
-              ),
+    );
+  }
 
-            ),
-            const SizedBox(height: 16.0),
-            Text('Prix Total: $_totalPrice Ar', style: const TextStyle(fontSize: 18.0, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16.0),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _showInvoice,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.pinkAccent, // Fond rose
-                    foregroundColor: Colors.white, // Texte en blanc
-                  ),
-                  icon: const Icon(Icons.receipt, color: Colors.white), // Icône de facture
-                  label: const Text('Facture', style: TextStyle(color: Colors.white)), // Texte en blanc
+  Widget _ligneMedicament(Medic medicament) {
+    final rupture = medicament.stockMed <= 0;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFE0E6E0)),
+      ),
+      child: Row(
+        children: <Widget>[
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  medicament.designMed,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
-                ElevatedButton.icon(
-                  onPressed: _saveAchat,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green, // Fond rose
-                    foregroundColor: Colors.white, // Texte en blanc
+                const SizedBox(height: 2),
+                Text(
+                  '${medicament.numMed} · ${formaterMontant(medicament.prixMed)}',
+                  style: const TextStyle(fontSize: 12, color: AppColors.gris),
+                ),
+                Text(
+                  rupture
+                      ? 'Rupture de stock'
+                      : 'Stock : ${medicament.stockMed}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: rupture ? AppColors.rouge : AppColors.vert,
                   ),
-                  icon: const Icon(Icons.save_alt, color: Colors.white), // Icône de sauvegarde
-                  label: const Text('Enregistrer', style: TextStyle(color: Colors.white)), // Texte en blanc
                 ),
               ],
             ),
-          ],
-        ),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 92,
+            child: ChampTexte(
+              controleur: _quantites[medicament.numMed]!,
+              label: 'Qté',
+              clavier: TextInputType.number,
+              formateurs: Saisies.chiffres,
+              onChanged: (_) => _recalculerTotal(),
+            ),
+          ),
+        ],
       ),
     );
   }
-}
 
-class MedicSearchDelegate extends SearchDelegate<Medic> {
-  final List<Medic> medics;
-  final Function(String) onSearchChanged;
-
-  MedicSearchDelegate(this.medics, this.onSearchChanged);
-
-  @override
-  List<Widget> buildActions(BuildContext context) {
-    return [
-      IconButton(
-        icon: const Icon(Icons.clear),
-        onPressed: () {
-          query = '';
-          onSearchChanged(query);
-        },
+  Widget _piedDePage() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(top: BorderSide(color: Color(0xFFE0E6E0))),
       ),
-    ];
-  }
-
-  @override
-  Widget buildLeading(BuildContext context) {
-    return IconButton(
-      icon: const Icon(Icons.arrow_back),
-      onPressed: () {
-        close(context, _createEmptyMedic());
-      },
-    );
-  }
-
-  @override
-  Widget buildResults(BuildContext context) {
-    final List<Medic> filteredMedics = medics.where((medic) {
-      return medic.designMed.toLowerCase().contains(query.toLowerCase());
-    }).toList();
-
-    return ListView.builder(
-      itemCount: filteredMedics.length,
-      itemBuilder: (context, index) {
-        final Medic medic = filteredMedics[index];
-        return ListTile(
-          title: Text(medic.designMed),
-          onTap: () {
-            close(context, medic);
-          },
-        );
-      },
-    );
-  }
-
-  @override
-  Widget buildSuggestions(BuildContext context) {
-    final List<Medic> filteredMedics = medics.where((medic) {
-      return medic.designMed.toLowerCase().contains(query.toLowerCase());
-    }).toList();
-
-    return ListView.builder(
-      itemCount: filteredMedics.length,
-      itemBuilder: (context, index) {
-        final Medic medic = filteredMedics[index];
-        return ListTile(
-          title: Text(medic.designMed),
-          onTap: () {
-            query = medic.designMed;
-            showResults(context);
-          },
-        );
-      },
-    );
-  }
-
-  Medic _createEmptyMedic() {
-    return Medic(
-      id: 0,
-      numMed: '',
-      designMed: '',
-      prixMed: 0,
-      stockMed: 0,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: <Widget>[
+              const Text(
+                'Total',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              Text(
+                formaterMontant(_total),
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.vertFonce,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _enregistrementEnCours
+                      ? null
+                      : () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.close),
+                  label: const Text('Annuler'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _enregistrementEnCours ? null : _enregistrer,
+                  icon: const Icon(Icons.save_alt),
+                  label: Text(
+                    _enregistrementEnCours ? 'Enregistrement…' : 'Enregistrer',
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

@@ -1,9 +1,18 @@
 import 'package:flutter/material.dart';
-import '../Models/entr.dart'; // Assurez-vous d'importer correctement votre modèle d'entrée
-import '../SQLite/sqlite.dart'; // Assurez-vous d'importer correctement votre gestionnaire de base de données
-import '../main.dart'; // Assurez-vous d'importer correctement votre fichier principal
 import 'package:intl/intl.dart';
 
+import '../Models/entr.dart';
+import '../SQLite/sqlite.dart';
+import '../core/exceptions.dart';
+import '../core/feedback.dart';
+import '../core/validators.dart';
+import '../core/widgets/app_text_field.dart';
+
+/// Formulaire d'enregistrement d'une entrée de stock.
+///
+/// Une entrée crée **toujours** une nouvelle ligne : l'historique des
+/// réceptions reste intact, et le stock n'est augmenté qu'une seule fois
+/// (côté base de données, dans une transaction).
 class AddEntree extends StatefulWidget {
   const AddEntree({super.key});
 
@@ -12,259 +21,230 @@ class AddEntree extends StatefulWidget {
 }
 
 class _AddEntreeState extends State<AddEntree> {
-  var _numEntrController = TextEditingController();
-  var _stockEntrController = TextEditingController();
-  var _dateEntrController = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
+  final _numeroControleur = TextEditingController();
+  final _quantiteControleur = TextEditingController();
+  final _dateControleur = TextEditingController();
+  final DatabaseHelper _base = DatabaseHelper();
 
-  bool _validateNumEntr = false;
-  bool _validateNumMed = false;
-  bool _validateStockEntr = false;
-  bool _validateDateEntr = false;
-
-  final DatabaseHelper _dbHelper = DatabaseHelper();
-  List<String> _medNum = [];
-  String? _selectedMedNum;
+  List<String> _numerosMedicaments = <String>[];
+  String? _medicamentSelectionne;
+  bool _chargement = true;
+  bool _enregistrementEnCours = false;
+  String? _erreurChargement;
 
   @override
   void initState() {
     super.initState();
-    _loadMedNum();
+    _dateControleur.text = DateFormat('dd/MM/yyyy').format(DateTime.now());
+    _chargerMedicaments();
   }
 
-  void _loadMedNum() async {
+  @override
+  void dispose() {
+    _numeroControleur.dispose();
+    _quantiteControleur.dispose();
+    _dateControleur.dispose();
+    super.dispose();
+  }
+
+  Future<void> _chargerMedicaments() async {
     try {
-      List<String> medNum = await _dbHelper.getAllMedNum();
+      final numeros = await _base.getAllMedNum();
+      if (!mounted) return;
       setState(() {
-        _medNum = medNum;
+        _numerosMedicaments = numeros;
+        _chargement = false;
       });
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: Colors.red,
-          content: Text(
-            'Erreur lors du chargement des numéros de médicaments: $e',
-            style: const TextStyle(color: Colors.white),
-          ),
-        ),
-      );
+    } catch (erreur) {
+      if (!mounted) return;
+      setState(() {
+        _erreurChargement = 'Chargement impossible : $erreur';
+        _chargement = false;
+      });
     }
   }
 
-  void _validateFields() {
+  Future<void> _choisirDate() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2101),
+    );
+    if (date == null || !mounted) return;
     setState(() {
-      _numEntrController.text.isEmpty ? _validateNumEntr = true : _validateNumEntr = false;
-      _selectedMedNum == null ? _validateNumMed = true : _validateNumMed = false;
-      _stockEntrController.text.isEmpty ? _validateStockEntr = true : _validateStockEntr = false;
-      _dateEntrController.text.isEmpty ? _validateDateEntr = true : _validateDateEntr = false;
+      _dateControleur.text = DateFormat('dd/MM/yyyy').format(date);
     });
+  }
+
+  Future<void> _enregistrer() async {
+    if (!_formKey.currentState!.validate()) return;
+    if (_medicamentSelectionne == null) {
+      afficherMessage(context, 'Sélectionnez un médicament.', erreur: true);
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    setState(() => _enregistrementEnCours = true);
+
+    try {
+      await _base.insertEntree(
+        Entree(
+          numEntr: _numeroControleur.text.trim(),
+          numMed: _medicamentSelectionne!,
+          stockEntr: Validators.versEntier(_quantiteControleur.text) ?? 0,
+          dateEntr: _dateControleur.text.trim(),
+        ),
+      );
+
+      if (!mounted) return;
+      afficherMessage(context, 'Entrée de stock enregistrée.');
+      Navigator.of(context).pop(true);
+    } on EntiteIntrouvableException catch (erreur) {
+      if (!mounted) return;
+      setState(() => _enregistrementEnCours = false);
+      afficherMessage(context, erreur.toString(), erreur: true);
+    } catch (erreur) {
+      if (!mounted) return;
+      setState(() => _enregistrementEnCours = false);
+      afficherMessage(context, "Échec de l'enregistrement : $erreur", erreur: true);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          "Ajouter une Entrée",
-          style: TextStyle(color: Colors.white),
-        ),
-        backgroundColor: Colors.green,
-      ),
-      body: SingleChildScrollView(
-        child: Container(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 20.0),
-              TextField(
-                controller: _numEntrController,
-                decoration: InputDecoration(
-                  border: const OutlineInputBorder(),
-                  hintText: 'Entrer le numéro d\'entrée',
-                  labelText: 'Numéro d\'entrée:',
-                  errorText: _validateNumEntr
-                      ? 'Le champ Numéro d\'entrée ne peut pas être vide'
-                      : null,
-                  filled: true,
-                  fillColor: Colors.green.withOpacity(0.2),
-                  focusedBorder: OutlineInputBorder(
-                    borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20.0),
-              DropdownButtonFormField<String>(
-                value: _selectedMedNum,
-                items: _medNum.map((String value) {
-                  return DropdownMenuItem<String>(
-                    value: value,
-                    child: Text(value),
-                  );
-                }).toList(),
-                onChanged: (newValue) {
-                  setState(() {
-                    _selectedMedNum = newValue;
-                  });
-                },
-                decoration: InputDecoration(
-                  border: const OutlineInputBorder(),
-                  hintText: 'Sélectionner le numéro de médicament',
-                  labelText: 'Numéro de médicament:',
-                  errorText: _validateNumMed
-                      ? 'Le champ Numéro de médicament ne peut pas être vide'
-                      : null,
-                  filled: true,
-                  fillColor: Colors.green.withOpacity(0.2),
-                  focusedBorder: OutlineInputBorder(
-                    borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20.0),
-              TextFormField(
-                controller: _stockEntrController,
-                decoration: InputDecoration(
-                  border: const OutlineInputBorder(),
-                  hintText: 'Entrer la quantité entrée',
-                  labelText: 'Quantité entrée:',
-                  errorText: _validateStockEntr
-                      ? 'Le champ Quantité entrée ne peut pas être vide'
-                      : null,
-                  filled: true,
-                  fillColor: Colors.green.withOpacity(0.2),
-                  focusedBorder: OutlineInputBorder(
-                    borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20.0),
-              TextFormField(
-                controller: _dateEntrController,
-                readOnly: true,
-                onTap: () async {
-                  DateTime? pickedDate = await showDatePicker(
-                    context: context,
-                    initialDate: DateTime.now(),
-                    firstDate: DateTime(2000),
-                    lastDate: DateTime(2101),
-                  );
+    if (_chargement) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Nouvelle entrée')),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
 
-                  if (pickedDate != null) {
+    if (_erreurChargement != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Nouvelle entrée')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text(_erreurChargement!, textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: () {
                     setState(() {
-                      _dateEntrController.text = DateFormat('dd/MM/yy').format(pickedDate);
+                      _chargement = true;
+                      _erreurChargement = null;
                     });
-                  }
-                },
-                decoration: InputDecoration(
-                  border: const OutlineInputBorder(),
-                  hintText: 'Entrer la date d\'entrée',
-                  labelText: 'Date d\'entrée:',
-                  errorText: _validateDateEntr
-                      ? 'Le champ Date d\'entrée ne peut pas être vide'
-                      : null,
-                  filled: true,
-                  fillColor: Colors.green.withOpacity(0.2),
-                  focusedBorder: OutlineInputBorder(
-                    borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
+                    _chargerMedicaments();
+                  },
+                  child: const Text('Réessayer'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (_numerosMedicaments.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Nouvelle entrée')),
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Text(
+              "Aucun médicament enregistré. Ajoutez d'abord un médicament "
+              "dans l'onglet « Médicaments ».",
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Nouvelle entrée')),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                ChampTexte(
+                  controleur: _numeroControleur,
+                  label: "Numéro d'entrée",
+                  hint: 'Ex. : ENT-001',
+                  icone: Icons.tag,
+                  validateur: (valeur) => Validators.obligatoire(
+                    valeur,
+                    champ: "Le numéro d'entrée",
                   ),
                 ),
-              ),
-              const SizedBox(height: 20.0),
-              Row(
-                children: [
-                  TextButton(
-                    style: TextButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        backgroundColor: Colors.green,
-                        textStyle: const TextStyle(fontSize: 15)),
-                    onPressed: () async {
-                      _validateFields();
-
-                      if (!_validateNumEntr &&
-                          !_validateNumMed &&
-                          !_validateStockEntr &&
-                          !_validateDateEntr) {
-                        try {
-                          int stockEntr = int.parse(_stockEntrController.text);
-
-                          // Mise à jour du stock du médicament dans medics
-                          await _dbHelper.updateMedicStock(_selectedMedNum!, stockEntr);
-
-                          // Création de l'objet Entree
-                          Entree newEntree = Entree(
-                            numEntr: _numEntrController.text,
-                            numMed: _selectedMedNum!,
-                            stockEntr: stockEntr,
-                            dateEntr: _dateEntrController.text,
-                          );
-
-                          // Insertion de l'entree dans la table entrees
-                          await _dbHelper.insertEntree(newEntree).whenComplete(() {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                backgroundColor: Colors.green,
-                                content: Text(
-                                  'Médicament entré avec succès',
-                                  style: TextStyle(color: Colors.white),
-                                ),
-                              ),
-                            );
-
-                            _numEntrController.clear();
-                            _stockEntrController.clear();
-                            _dateEntrController.clear();
-                            setState(() {
-                              _selectedMedNum = null;
-                            });
-
-                            Navigator.pushAndRemoveUntil(
-                              context,
-                              MaterialPageRoute(builder: (context) => const HomePage(initialIndex: 1)),
-                                  (Route<dynamic> route) => false,
-                            );
-                          });
-
-                        } catch (e) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              backgroundColor: Colors.red,
-                              content: Text(
-                                'Erreur lors de l\'ajout de l\'entrée: $e',
-                                style: const TextStyle(color: Colors.white),
-                              ),
-                            ),
-                          );
-                        }
-                      }
-                    },
-                    child: const Text('Enregistrer'),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  value: _medicamentSelectionne,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Médicament',
+                    prefixIcon: Icon(Icons.medication_outlined),
                   ),
-                  const SizedBox(width: 20.0),
-                  TextButton(
-                    style: TextButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        backgroundColor: Colors.blue,
-                        textStyle: const TextStyle(fontSize: 15)),
-                    onPressed: () {
-                      Navigator.pop(context);
-                    },
-                    child: const Text('Annuler'),
+                  items: _numerosMedicaments
+                      .map(
+                        (numero) => DropdownMenuItem<String>(
+                          value: numero,
+                          child: Text(numero),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (valeur) {
+                    setState(() => _medicamentSelectionne = valeur);
+                  },
+                  validator: (valeur) =>
+                      valeur == null ? 'Sélectionnez un médicament.' : null,
+                ),
+                const SizedBox(height: 16),
+                ChampTexte(
+                  controleur: _quantiteControleur,
+                  label: 'Quantité reçue',
+                  icone: Icons.inventory_2_outlined,
+                  clavier: TextInputType.number,
+                  formateurs: Saisies.chiffres,
+                  validateur: (valeur) => Validators.entier(
+                    valeur,
+                    champ: 'La quantité',
                   ),
-                ],
-              )
-            ],
+                ),
+                const SizedBox(height: 16),
+                ChampTexte(
+                  controleur: _dateControleur,
+                  label: "Date d'entrée",
+                  icone: Icons.calendar_today_outlined,
+                  lectureSeule: true,
+                  onTap: _choisirDate,
+                  validateur: (valeur) => Validators.obligatoire(
+                    valeur,
+                    champ: "La date d'entrée",
+                  ),
+                ),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: _enregistrementEnCours ? null : _enregistrer,
+                  icon: const Icon(Icons.save_outlined),
+                  label: const Text('Enregistrer'),
+                ),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: _enregistrementEnCours
+                      ? null
+                      : () => Navigator.of(context).pop(),
+                  child: const Text('Annuler'),
+                ),
+              ],
+            ),
           ),
         ),
       ),
