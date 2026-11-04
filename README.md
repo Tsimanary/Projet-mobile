@@ -20,6 +20,7 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
 | **Ventes** | Vente multi-lignes, contrôle de stock, consommation **FEFO**, facture PDF A4 |
 | **Lots** | Suivi des péremptions, filtres (≤ 90 j, ≤ 30 j, périmés), ordre FEFO |
 | **Sauvegarde** | Export JSON complet partagé (courriel, Drive) et restauration transactionnelle |
+| **Sécurité** | Base SQLite **chiffrée** (SQLCipher), **code d'accès** 4–6 chiffres, reverrouillage automatique |
 
 ---
 
@@ -45,6 +46,13 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
 10. **Une sauvegarde = un fichier JSON versionné** contenant toutes les tables ;
     la restauration est transactionnelle (tout ou rien) et recalcule le stock
     depuis les lots.
+11. **La base est chiffrée** (SQLCipher). La clé de 32 octets est générée sur
+    l'appareil et conservée par le Keystore du système ; un fichier `.db`
+    copié est inutilisable sans elle. Les bases existantes sont converties
+    automatiquement, sans perte.
+12. **Un code d'accès** protège l'application : empreinte salée (jamais le
+    code), 5 essais avant un blocage de 5 minutes, reverrouillage après 30 s
+    en arrière-plan.
 
 Ces règles sont couvertes par des tests (`test/`).
 
@@ -82,6 +90,7 @@ La CI GitHub Actions (`.github/workflows/flutter.yml`) exécute `analyze` et
 - `test/stock_rules_test.dart` — disponibilité, allocation **FEFO**, montants
 - `test/validators_test.dart` — validation, formatage, dates ISO
 - `test/backup_format_test.dart` — format de sauvegarde, refus des fichiers invalides
+- `test/verrouillage_test.dart` — politique du code d'accès, empreintes
 - `test/securite_test.dart` — hachage et vérification des mots de passe
 - `test/widget_test.dart` — démarrage de l'application
 
@@ -95,6 +104,10 @@ lib/
 ├── core/                     # Socle transverse
 │   ├── backup.dart           # Export / partage / restauration du fichier
 │   ├── backup_format.dart    # Format JSON versionné (pur, testable)
+│   ├── coffre.dart           # Clé de chiffrement (Keystore du système)
+│   ├── gardien_session.dart  # Écran de verrouillage + reverrouillage auto
+│   ├── verrouillage.dart     # Code d'accès (empreinte, tentatives, blocage)
+│   ├── verrouillage_regles.dart # Politique du code (pure, testable)
 │   ├── exceptions.dart       # Exceptions métier (messages utilisateur)
 │   ├── feedback.dart         # Snackbars
 │   ├── format.dart           # Montants, dates ISO, parsing tolérant
@@ -107,11 +120,12 @@ lib/
 ├── SQLite/sqlite.dart        # Données, transactions, lots, migrations
 ├── Authentification/         # Connexion, création de compte
 ├── dialog/                   # Formulaires (médicament, entrée, vente)
-├── pages/                    # Écrans (accueil, médicaments, entrées, ventes, lots, sauvegarde)
+├── pages/                    # Écrans (accueil, médicaments, entrées, ventes, lots,
+│                             #  sauvegarde, sécurité, verrouillage)
 └── assets/images/
 
 android/                      # AGP 8.3.2, Gradle 8.4, Kotlin 1.9.22, JDK 17
-docs/                         # audit, corrections, publication, confidentialité
+docs/                         # audit, corrections, sécurité, publication, confidentialité
 store/                        # icônes du Play Store (1024 et 512 px)
 ```
 
@@ -135,9 +149,14 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
 
 ## Sécurité
 
+- **Base chiffrée** (SQLCipher) : clé de 32 octets dans le Keystore Android,
+  jamais écrite dans un fichier de l'application.
+- **Code d'accès** 4–6 chiffres : empreinte salée, blocage temporaire après 5
+  essais, reverrouillage après 30 s d'inactivité en arrière-plan.
 - Mots de passe hachés avec sel aléatoire (migration transparente).
 - Sauvegarde Android désactivée (`android:allowBackup="false"`).
 - Requêtes SQL entièrement paramétrées.
+- Modèle de menace complet et limites : [`docs/SECURITE.md`](docs/SECURITE.md).
 - **Aucune permission Android demandée** : l'application n'a ni accès à
   internet, ni au stockage, ni à la localisation. Les données ne sortent du
   téléphone que par l'export de sauvegarde, déclenché par l'utilisateur.
@@ -156,7 +175,10 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
 - La signature de release nécessite **votre** keystore
   (`android/key.properties`, voir `docs/PUBLICATION_PLAY_STORE.md`) ; sans lui,
   les builds sont signés avec les clés de debug.
-- Base non chiffrée au repos, pas encore de code d'accès applicatif.
+- Le **fichier de sauvegarde JSON n'est pas chiffré** (il doit rester
+  restaurable sur un autre appareil) : à conserver en lieu sûr.
+- Empreintes SHA-256 (code et mots de passe) : passage à Argon2id prévu.
+- Pas de rôles (tout compte peut tout faire) ni de biométrie.
 
 Voir `docs/AUDIT_PROJET.md` (analyse initiale) et `docs/CORRECTIONS.md`
 (journal des corrections).

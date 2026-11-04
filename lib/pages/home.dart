@@ -8,6 +8,7 @@ import 'entree.dart';
 import 'lots.dart';
 import 'medicament.dart';
 import 'sauvegarde.dart';
+import 'securite_page.dart';
 
 /// Conteneur principal : barre de navigation + déconnexion.
 class HomePage extends StatefulWidget {
@@ -74,6 +75,15 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: Text(_titres[_index]),
         actions: <Widget>[
+          IconButton(
+            tooltip: 'Sécurité',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const SecuritePage(),
+              ),
+            ),
+            icon: const Icon(Icons.lock_outline),
+          ),
           IconButton(
             tooltip: 'Sauvegarde et restauration',
             onPressed: () => Navigator.of(context).push(

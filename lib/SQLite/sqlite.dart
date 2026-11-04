@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:path/path.dart';
-import 'package:sqflite/sqflite.dart';
+// sqflite_sqlcipher est un remplaçant direct de sqflite : même API, plus le
+// chiffrement SQLCipher (clé fournie à l'ouverture).
+import 'package:sqflite_sqlcipher/sqflite.dart';
 
 import '../Models/acht.dart';
 import '../Models/entr.dart';
@@ -7,6 +11,7 @@ import '../Models/lot.dart';
 import '../Models/medic.dart';
 import '../Models/users.dart';
 import '../core/backup_format.dart';
+import '../core/coffre.dart';
 import '../core/exceptions.dart';
 import '../core/format.dart';
 import '../core/securite.dart';
@@ -24,7 +29,10 @@ import '../core/stock_rules.dart';
 ///    une entrée peuvent donc être annulées sans dérive ;
 ///  * les dates sont stockées en `AAAA-MM-JJ` ;
 ///  * les mots de passe sont hachés (avec migration des comptes existants) ;
-///  * un médicament possédant un historique ne peut pas être supprimé.
+///  * un médicament possédant un historique ne peut pas être supprimé ;
+///  * le fichier de base est **chiffré** (SQLCipher), avec une clé conservée
+///    dans le coffre du système (Keystore) et une conversion automatique des
+///    bases existantes encore en clair.
 class DatabaseHelper {
   DatabaseHelper._();
 
@@ -34,7 +42,7 @@ class DatabaseHelper {
   factory DatabaseHelper() => _instance;
 
   static const String _nomBase = 'pharmacie.db';
-  static const int _versionBase = 3;
+  static const int _versionBase = 4;
 
   static const String _sqlLots = 'CREATE TABLE IF NOT EXISTS lots ('
       'id INTEGER PRIMARY KEY AUTOINCREMENT, '
@@ -44,6 +52,10 @@ class DatabaseHelper {
       'quantiteRestante INTEGER NOT NULL, '
       'datePeremption TEXT, '
       'dateReception TEXT NOT NULL)';
+
+  static const String _sqlParametres = 'CREATE TABLE IF NOT EXISTS parametres ('
+      'cle TEXT PRIMARY KEY, '
+      'valeur TEXT NOT NULL)';
 
   static const String _sqlMouvements = 'CREATE TABLE IF NOT EXISTS mouvements_stock ('
       'id INTEGER PRIMARY KEY AUTOINCREMENT, '
@@ -69,10 +81,15 @@ class DatabaseHelper {
 
   Future<Database> _ouvrir() async {
     final chemin = join(await getDatabasesPath(), _nomBase);
+    final cle = await Coffre.cleDeLaBase();
+
+    // Une base créée avant le chiffrement doit être convertie une seule fois.
+    await _chiffrerFichierExistant(chemin: chemin, cle: cle);
 
     return openDatabase(
       chemin,
       version: _versionBase,
+      password: cle,
       onConfigure: (db) async {
         await db.execute('PRAGMA foreign_keys = ON');
       },
@@ -114,6 +131,7 @@ class DatabaseHelper {
         );
         await db.execute(_sqlLots);
         await db.execute(_sqlMouvements);
+        await db.execute(_sqlParametres);
         await _creerIndex(db);
       },
       onUpgrade: (db, ancienneVersion, nouvelleVersion) async {
@@ -126,6 +144,10 @@ class DatabaseHelper {
           // v2 -> v3 : lots, mouvements de stock et dates ISO.
           await _migrerVers3(db);
         }
+        if (ancienneVersion < 4) {
+          // v3 -> v4 : réglages applicatifs (code d'accès, divers).
+          await db.execute(_sqlParametres);
+        }
         await _creerIndex(db);
       },
     );
@@ -134,6 +156,57 @@ class DatabaseHelper {
   // ---------------------------------------------------------------------------
   // Schéma, index et migrations
   // ---------------------------------------------------------------------------
+
+  /// Convertit une base encore en clair en base chiffrée (une seule fois).
+  ///
+  /// Procédure officielle SQLCipher : ouverture en clair, `ATTACH` de la cible
+  /// avec la clé, `sqlcipher_export`, puis remplacement du fichier. En cas
+  /// d'échec, le fichier d'origine est intact.
+  Future<void> _chiffrerFichierExistant({
+    required String chemin,
+    required String cle,
+  }) async {
+    if (await Coffre.baseDejaChiffree()) return;
+
+    if (!await databaseExists(chemin)) {
+      // Installation neuve : la base sera créée directement chiffrée.
+      await Coffre.marquerBaseChiffree();
+      return;
+    }
+
+    final temporaire = '$chemin.chiffrement';
+    await _supprimerFichierSqlite(temporaire);
+
+    final clair = await openDatabase(chemin);
+    try {
+      await clair.execute(
+        "ATTACH DATABASE '${_echapperSql(temporaire)}' AS chiffre "
+        "KEY '${_echapperSql(cle)}'",
+      );
+      await clair.execute("SELECT sqlcipher_export('chiffre')");
+      await clair.execute('DETACH DATABASE chiffre');
+    } finally {
+      await clair.close();
+    }
+
+    await _supprimerFichierSqlite(chemin);
+    await File(temporaire).rename(chemin);
+    await Coffre.marquerBaseChiffree();
+  }
+
+  /// Supprime un fichier SQLite et ses annexes (`-wal`, `-shm`, `-journal`).
+  Future<void> _supprimerFichierSqlite(String chemin) async {
+    for (final suffixe in <String>['', '-wal', '-shm', '-journal']) {
+      final fichier = File('$chemin$suffixe');
+      if (await fichier.exists()) {
+        await fichier.delete();
+      }
+    }
+  }
+
+  /// Échappe une valeur pour l'insérer dans une instruction SQL littérale
+  /// (`ATTACH ... KEY ...` n'accepte pas de paramètres liés de façon fiable).
+  String _echapperSql(String valeur) => valeur.replaceAll("'", "''");
 
   Future<void> _creerIndex(Database db) async {
     const instructions = <String>[
@@ -897,6 +970,41 @@ class DatabaseHelper {
       final restants = lot.joursRestants(maintenant: maintenant);
       return restants != null && restants <= jours;
     }).toList();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Paramètres applicatifs (clé/valeur)
+  // ---------------------------------------------------------------------------
+
+  Future<String?> lireParametre(String cle) async {
+    final db = await database;
+    final lignes = await db.query(
+      'parametres',
+      columns: <String>['valeur'],
+      where: 'cle = ?',
+      whereArgs: <Object?>[cle],
+      limit: 1,
+    );
+    if (lignes.isEmpty) return null;
+    return lignes.first['valeur'] as String?;
+  }
+
+  Future<void> ecrireParametre(String cle, String valeur) async {
+    final db = await database;
+    await db.insert(
+      'parametres',
+      <String, Object?>{'cle': cle, 'valeur': valeur},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> supprimerParametre(String cle) async {
+    final db = await database;
+    await db.delete(
+      'parametres',
+      where: 'cle = ?',
+      whereArgs: <Object?>[cle],
+    );
   }
 
   // ---------------------------------------------------------------------------

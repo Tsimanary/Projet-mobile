@@ -347,3 +347,67 @@ signingConfig = keystorePropertiesFile.exists()
 - **Rôles** (vendeur / gestionnaire) : nécessite un écran d'administration.
 - **Verrouillage biométrique** (`local_auth`).
 - **Synchronisation multi-postes** : présuppose un backend.
+
+---
+
+## 11. Itération 6 — chiffrement de la base et code d'accès
+
+### 11.1 Le risque traité
+
+Jusqu'ici, la base était un fichier SQLite **en clair** dans le répertoire
+privé de l'application. Sur un téléphone rooté, via ADB ou un outil de
+récupération, elle s'ouvre en dix secondes : l'intégralité du stock, des ventes
+et des comptes est lisible. C'était la dernière faiblesse majeure avant une
+mise entre les mains d'un pharmacien.
+
+### 11.2 Chiffrement (SQLCipher)
+
+| Élément | Choix |
+|---|---|
+| Moteur | `sqflite_sqlcipher` (API identique à `sqflite`, `sqflite` retiré pour éviter deux moteurs) |
+| Clé | 32 octets tirés de `Random.secure()`, encodés en base64url |
+| Conservation | `flutter_secure_storage` → **Keystore Android** ; jamais dans un fichier |
+| Ouverture | `openDatabase(..., password: cle)` |
+| Conversion des bases en clair | `ATTACH ... KEY` + `sqlcipher_export` + remplacement du fichier, **une seule fois** (marqueur dans le coffre) |
+| En cas d'échec de conversion | le fichier d'origine n'est pas touché (suppression après succès seulement) |
+
+Complément : `allowBackup="false"` était déjà en place — indispensable, sinon
+Android restaurerait la base sur un autre appareil sans la clé du Keystore.
+
+### 11.3 Code d'accès
+
+Le chiffrement protège le fichier ; il ne protège rien sur un téléphone
+déverrouillé. D'où un second verrou, indépendant :
+
+- **4 à 6 chiffres**, empreinte **SHA-256 salée** stockée dans une nouvelle
+  table `parametres` (schéma **v4**, clé/valeur) : le code n'existe nulle part.
+- **5 essais** puis blocage de **5 minutes** ; le compteur est **persisté en
+  base**, donc redémarrer l'application ne remet pas les compteurs à zéro.
+- **Reverrouillage automatique** après 30 s en arrière-plan (`GardienSession`,
+  placé dans `MaterialApp.builder` : l'écran de verrouillage recouvre routes et
+  dialogues).
+- Écran de réglages **Sécurité** : activation, changement, désactivation
+  (changement et désactivation exigent le code actuel).
+- Politique isolée dans `ReglesPin` (pure, testée) : longueur, seuil, durée.
+
+### 11.4 Décision assumée : pas de récupération
+
+Aucun « code de secours » n'est stocké. Un mécanisme de récupération serait une
+porte dérobée : il rendrait le verrou décoratif. La sortie de secours est la
+**sauvegarde JSON** — d'où l'importance de l'export régulier, rappelé dans
+l'écran Sécurité.
+
+### 11.5 Le point faible qui reste, écrit noir sur blanc
+
+Le **fichier de sauvegarde est en clair** (JSON). C'est un choix : il doit
+rester restaurable sur un autre appareil, et chiffrer correctement exige
+Argon2id + AES-GCM. Une cryptographie improvisée serait pire que l'absence de
+chiffrement. L'avertissement est affiché dans les écrans **Sécurité** et
+**Sauvegarde**, et le chantier est documenté dans `docs/SECURITE.md`.
+
+### 11.6 Tests
+
+9 tests supplémentaires (`test/verrouillage_test.dart`) : longueur et caractères
+du code, seuil de blocage, calcul de la fin de blocage, temps restant, formats
+de durée, empreinte (bon code / mauvais code / sel unique / pas de code en
+clair). Total du projet : **47 tests**.
