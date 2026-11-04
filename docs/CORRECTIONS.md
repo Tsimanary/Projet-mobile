@@ -226,7 +226,7 @@ lots vides, l'allocation partielle et les quantités invalides.
 
 ### 8.6 Tests
 
-Passage de 12 à **23 tests** : disponibilité, FEFO, montants, validateurs,
+Passage de 12 à **32 tests** : disponibilité, FEFO, montants, validateurs,
 dates ISO, hachage, démarrage de l'application.
 
 ### 8.7 Toujours ouvert
@@ -283,7 +283,7 @@ Après restauration, retour à l'écran de connexion — les comptes ont pu chan
 
 ### 9.5 Tests
 
-6 tests supplémentaires (`test/backup_format_test.dart`) : aller-retour complet,
+**6 tests supplémentaires** (`test/backup_format_test.dart`, total **38** au 5 novembre 2026) : aller-retour complet,
 refus du non-JSON, refus d'un fichier étranger, refus d'une version future,
 détection d'une table manquante, exhaustivité de la liste des tables.
 
