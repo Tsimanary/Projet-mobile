@@ -1,9 +1,12 @@
-import 'package:appharmacie/Authentification/signup.dart';
-import 'package:appharmacie/Models/users.dart';
-import 'package:appharmacie/SQLite/sqlite.dart';
 import 'package:flutter/material.dart';
-import '../main.dart';
-import 'package:get/get.dart';
+
+import '../Models/users.dart';
+import '../SQLite/sqlite.dart';
+import '../core/theme.dart';
+import '../core/validators.dart';
+import '../core/widgets/app_text_field.dart';
+import '../pages/home.dart';
+import 'signup.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -13,142 +16,200 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
+  final _formKey = GlobalKey<FormState>();
+  final _nomControleur = TextEditingController();
+  final _motDePasseControleur = TextEditingController();
+  final _baseDeDonnees = DatabaseHelper();
 
-  final username = TextEditingController();
-  final password = TextEditingController();
+  bool _motDePasseVisible = false;
+  bool _connexionEnCours = false;
+  String? _messageErreur;
 
-  bool isVisible = false;
+  @override
+  void dispose() {
+    _nomControleur.dispose();
+    _motDePasseControleur.dispose();
+    super.dispose();
+  }
 
-  bool isLoginTrue = false;
+  Future<void> _connexion() async {
+    if (!_formKey.currentState!.validate()) return;
+    FocusScope.of(context).unfocus();
 
-  final db = DatabaseHelper();
+    setState(() {
+      _connexionEnCours = true;
+      _messageErreur = null;
+    });
 
-  //Now we should call this function in login button
+    try {
+      final valide = await _baseDeDonnees.login(
+        Users(
+          usrName: _nomControleur.text.trim(),
+          usrPassword: _motDePasseControleur.text,
+        ),
+      );
 
-  void login() async {
-    var response = await db.login(Users(usrName: username.text, usrPassword: password.text));
-    if (response == true) {
-      // Si la connexion est correcte, naviguer vers HomePage
       if (!mounted) return;
-      Get.off(() => const HomePage()); // Utilisation de Get.off pour remplacer la page actuelle
-    } else {
+
+      if (!valide) {
+        setState(() {
+          _connexionEnCours = false;
+          _messageErreur = "Nom d'utilisateur ou mot de passe incorrect.";
+        });
+        return;
+      }
+
+      setState(() => _connexionEnCours = false);
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(builder: (_) => const HomePage()),
+      );
+    } catch (erreur) {
+      if (!mounted) return;
       setState(() {
-        isLoginTrue = true;
+        _connexionEnCours = false;
+        _messageErreur = 'Erreur de connexion : $erreur';
       });
     }
   }
 
-  //We have to create global key for our form
-  final formkey = GlobalKey<FormState>();
-
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.all(10.0),
-            //We put all our textfield to a form to be controlled and not allow as empty
-            child: Form(
-              key: formkey,
-              child: Column(
-                children: [
-                  //Username field
-                  Image.asset(
-                    "lib/assets/images/Drugst.png",
-                    width: 370,
-                  ),
-                  const SizedBox(height: 15),
-                  Container(
-                    margin: const EdgeInsets.all(10),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      color: Colors.green.withOpacity(.2),
-                    ),
-                    child:  TextFormField(
-                      controller: username,
-                      validator: (value) {
-                        if (value!.isEmpty){
-                          return"username is required";
-                        }
-                        return null;
-                      },
-                      decoration: const InputDecoration(
-                        icon: Icon(Icons.person),
-                        border: InputBorder.none,
-                        hintText: "Username", // corrected 'label' to 'labelText'
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxWidth: 280,
+                        maxHeight: 160,
+                      ),
+                      child: Image.asset(
+                        'lib/assets/images/Drugst.png',
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const Icon(
+                          Icons.local_pharmacy,
+                          size: 96,
+                          color: AppColors.vert,
+                        ),
                       ),
                     ),
-                  ),
-                  //Password field
-                  Container(
-                    margin: const EdgeInsets.all(10),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      color: Colors.green.withOpacity(.2),
-                    ),
-                    child:  TextFormField(
-                      controller: password,
-                      validator: (value) {
-                        if (value!.isEmpty){
-                          return"password is required";
-                        }
-                        return null;
-                      },
-                      obscureText: !isVisible,
-                      decoration: InputDecoration(
-                        icon: const Icon(Icons.lock),
-                        border: InputBorder.none,
-                        hintText: "Password",
-                        suffixIcon: IconButton(
-                            onPressed: () {
-                              setState(() {
-                                isVisible = !isVisible;
-                              });
-                            }, icon: Icon(isVisible
-                            ? Icons.visibility
-                            : Icons.visibility_off
-                        ))
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Gestion de pharmacie',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.vertFonce,
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 10),
-                  //SignUp button
-                  Container(
-                    height: 55,
-                    width: MediaQuery.of(context).size.width * .9,
-                    decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(8),
-                        color: Colors.green),
-                    child: TextButton(onPressed: () {
-                      if(formkey.currentState!.validate()){
-                        //Login method will be here
-                        login();
-                      }
-                    },
-                        child: const Text("LOGIN",
-                          style: TextStyle(color: Colors.white),)),
-                  ),
-                  
-                  //Sign up button
-                   Row(
-                     mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Text("vous n'avez pas de compte ? Cliquez sur "),
-                      TextButton(onPressed: () {
-                        //Navigate to sign up
-                        Navigator.push(context, MaterialPageRoute(builder: (context)=>const SignUp()));
-                      }, child: const Text("SIGN UP"))
+                    const SizedBox(height: 24),
+                    ChampTexte(
+                      controleur: _nomControleur,
+                      label: "Nom d'utilisateur",
+                      icone: Icons.person_outline,
+                      textCapitalization: TextCapitalization.none,
+                      validateur: Validators.obligatoire,
+                    ),
+                    const SizedBox(height: 16),
+                    ChampTexte(
+                      controleur: _motDePasseControleur,
+                      label: 'Mot de passe',
+                      icone: Icons.lock_outline,
+                      obscur: !_motDePasseVisible,
+                      validateur: (valeur) =>
+                          (valeur == null || valeur.isEmpty)
+                              ? 'Le mot de passe est obligatoire.'
+                              : null,
+                      suffixe: IconButton(
+                        tooltip: _motDePasseVisible
+                            ? 'Masquer le mot de passe'
+                            : 'Afficher le mot de passe',
+                        onPressed: () {
+                          setState(() {
+                            _motDePasseVisible = !_motDePasseVisible;
+                          });
+                        },
+                        icon: Icon(
+                          _motDePasseVisible
+                              ? Icons.visibility_off
+                              : Icons.visibility,
+                        ),
+                      ),
+                    ),
+                    if (_messageErreur != null) ...<Widget>[
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppColors.rougeSurface,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: <Widget>[
+                            const Icon(
+                              Icons.error_outline,
+                              color: AppColors.rouge,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _messageErreur!,
+                                style: const TextStyle(
+                                  color: AppColors.rouge,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ],
-                  ),
-                  isLoginTrue? const Text("Username or password is incorrect",
-                    style: TextStyle(color: Colors.red),
-                  )
-                      :const SizedBox(),
-                ],
+                    const SizedBox(height: 24),
+                    FilledButton(
+                      onPressed: _connexionEnCours ? null : _connexion,
+                      child: _connexionEnCours
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.white,
+                                ),
+                              ),
+                            )
+                          : const Text('SE CONNECTER'),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: <Widget>[
+                        const Text("Pas encore de compte ?"),
+                        TextButton(
+                          onPressed: _connexionEnCours
+                              ? null
+                              : () {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute<void>(
+                                      builder: (_) => const SignUp(),
+                                    ),
+                                  );
+                                },
+                          child: const Text('CRÉER UN COMPTE'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

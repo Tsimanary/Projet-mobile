@@ -1,318 +1,414 @@
 import 'package:flutter/material.dart';
-import 'package:appharmacie/Models/entr.dart'; // Assurez-vous d'importer correctement votre modèle d'Entree
-import 'package:appharmacie/SQLite/sqlite.dart'; // Assurez-vous d'importer correctement votre classe DatabaseHelper
-import 'package:appharmacie/dialog/addEntree.dart';
 
+import '../Models/entr.dart';
+import '../SQLite/sqlite.dart';
+import '../core/exceptions.dart';
+import '../core/feedback.dart';
+import '../core/format.dart';
+import '../core/theme.dart';
+import '../core/validators.dart';
+import '../core/widgets/app_text_field.dart';
+import '../core/widgets/confirm_dialog.dart';
+import '../dialog/addEntree.dart';
+
+/// Historique des entrées de stock.
+///
+/// Chaque entrée est une ligne distincte : modifier ou supprimer une entrée
+/// ajuste le stock du médicament par différence (jamais par recalcul global).
 class EntreePage extends StatefulWidget {
   const EntreePage({super.key});
 
   @override
-  _EntreePageState createState() => _EntreePageState();
+  State<EntreePage> createState() => _EntreePageState();
 }
 
 class _EntreePageState extends State<EntreePage> {
-  late List<Entree> _entrees;
-  late DatabaseHelper _dbHelper;
-  late List<Entree> _filteredEntrees;
-  final TextEditingController _searchController = TextEditingController();
+  final DatabaseHelper _base = DatabaseHelper();
+  final TextEditingController _rechercheControleur = TextEditingController();
+
+  List<Entree> _entrees = <Entree>[];
+  List<Entree> _entreesFiltrees = <Entree>[];
+  List<String> _numerosMedicaments = <String>[];
+  bool _chargement = true;
+  String? _erreur;
 
   @override
   void initState() {
     super.initState();
-    _entrees = [];
-    _dbHelper = DatabaseHelper();
-    _filteredEntrees = [];
-    _refreshEntrees();
-    _searchController.addListener(_filterEntrees);
+    _rechercheControleur.addListener(_filtrer);
+    _charger();
   }
 
-  void _filterEntrees() {
+  @override
+  void dispose() {
+    _rechercheControleur.dispose();
+    super.dispose();
+  }
+
+  Future<void> _charger() async {
+    try {
+      final entrees = await _base.getAllEntrees();
+      final numeros = await _base.getAllMedNum();
+      if (!mounted) return;
+      setState(() {
+        _entrees = entrees;
+        _numerosMedicaments = numeros;
+        _entreesFiltrees = _filtrerListe(entrees);
+        _chargement = false;
+        _erreur = null;
+      });
+    } catch (erreur) {
+      if (!mounted) return;
+      setState(() {
+        _erreur = 'Chargement impossible : $erreur';
+        _chargement = false;
+      });
+    }
+  }
+
+  List<Entree> _filtrerListe(List<Entree> entrees) {
+    final recherche = _rechercheControleur.text.trim().toLowerCase();
+    if (recherche.isEmpty) return entrees;
+    return entrees
+        .where(
+          (entree) =>
+              entree.numEntr.toLowerCase().contains(recherche) ||
+              entree.numMed.toLowerCase().contains(recherche),
+        )
+        .toList();
+  }
+
+  void _filtrer() {
     setState(() {
-      _filteredEntrees = _entrees
-          .where((entree) =>
-      entree.numEntr.toLowerCase().contains(_searchController.text.toLowerCase()) ||
-          entree.numMed.toLowerCase().contains(_searchController.text.toLowerCase()))
-          .toList();
+      _entreesFiltrees = _filtrerListe(_entrees);
     });
   }
 
-  void _refreshEntrees() async {
-    List<Entree> list = await _dbHelper.getAllEntrees();
-    setState(() {
-      _entrees = list;
-      _filteredEntrees = list;
-    });
+  Future<void> _ajouter() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<bool>(builder: (_) => const AddEntree()),
+    );
+    if (!mounted) return;
+    await _charger();
+  }
+
+  Future<void> _modifier(Entree entree) async {
+    final modifiee = await showDialog<Entree>(
+      context: context,
+      builder: (_) => _DialogueModificationEntree(
+        entree: entree,
+        numerosMedicaments: _numerosMedicaments,
+      ),
+    );
+    if (modifiee == null || !mounted) return;
+
+    try {
+      await _base.updateEntree(modifiee);
+      if (!mounted) return;
+      afficherMessage(context, 'Entrée mise à jour.');
+      await _charger();
+    } on EntiteIntrouvableException catch (erreur) {
+      if (!mounted) return;
+      afficherMessage(context, erreur.toString(), erreur: true);
+    } catch (erreur) {
+      if (!mounted) return;
+      afficherMessage(context, 'Mise à jour impossible : $erreur', erreur: true);
+    }
+  }
+
+  Future<void> _supprimer(Entree entree) async {
+    final confirme = await confirmerAction(
+      context,
+      titre: "Supprimer l'entrée",
+      message:
+          "Supprimer l'entrée ${entree.numEntr} ?\n"
+          'Le stock du médicament sera diminué de ${entree.stockEntr} unité(s).',
+      libelleConfirmer: 'Supprimer',
+    );
+    if (!confirme || !mounted) return;
+
+    try {
+      await _base.deleteEntree(entree.id!);
+      if (!mounted) return;
+      afficherMessage(context, 'Entrée supprimée.');
+      await _charger();
+    } catch (erreur) {
+      if (!mounted) return;
+      afficherMessage(context, 'Suppression impossible : $erreur', erreur: true);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Column(
-        children: [
+        children: <Widget>[
           Padding(
-            padding: const EdgeInsets.all(8.0),
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                labelText: 'Recherche',
-                prefixIcon: const Icon(Icons.search, color: Colors.green),
-                filled: true,
-                fillColor: Colors.green.withOpacity(0.2),
-                focusedBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.green.withOpacity(0.5), width: 2.0),
-                ),
+              controller: _rechercheControleur,
+              decoration: const InputDecoration(
+                labelText: 'Rechercher (numéro ou médicament)',
+                prefixIcon: Icon(Icons.search),
               ),
             ),
           ),
-          Expanded(
-            child: _filteredEntrees.isEmpty
-                ? const Center(
-              child: Text('Pas d\'entrées ajoutées'),
-            )
-                : ListView.builder(
-              itemCount: _filteredEntrees.length,
-              itemBuilder: (context, index) {
-                var entree = _filteredEntrees[index];
-                return Container(
-                  decoration: BoxDecoration(
-                    color: Colors.green.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-                  child: ListTile(
-                    title: Text(
-                      'Entrée #${entree.numEntr}',
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                    subtitle: Text(
-                      'Médicament: ${entree.numMed}, Stock Entrée: ${entree.stockEntr}, Date: ${entree.dateEntr}',
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.edit, color: Colors.blue),
-                          onPressed: () {
-                            _editEntree(entree);
-                          },
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.pink),
-                          onPressed: () {
-                            _confirmDeleteEntree(entree);
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
+          Expanded(child: _contenu()),
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const AddEntree()),
-          ).then((_) {
-            _refreshEntrees();
-          });
-        },
-        backgroundColor: Colors.green,
+        tooltip: 'Nouvelle entrée',
+        onPressed: _ajouter,
         child: const Icon(Icons.add),
       ),
     );
   }
 
-  void _editEntree(Entree entree) {
-    var _entreeNumEntrController = TextEditingController(text: entree.numEntr);
-    var _entreeMedController = TextEditingController(text: entree.numMed);
-    var _entreeStockController = TextEditingController(text: entree.stockEntr.toString());
-    var _entreeDateController = TextEditingController(text: entree.dateEntr);
+  Widget _contenu() {
+    if (_chargement) {
+      return const Center(child: CircularProgressIndicator());
+    }
 
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12.0),
-              border: Border.all(
-                color: Colors.green.withOpacity(0.5),
-                width: 3.0,
+    if (_erreur != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(_erreur!, textAlign: TextAlign.center),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: () {
+                  setState(() => _chargement = true);
+                  _charger();
+                },
+                child: const Text('Réessayer'),
               ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_entreesFiltrees.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            _entrees.isEmpty
+                ? "Aucune entrée enregistrée.\nAppuyez sur + pour en créer une."
+                : 'Aucun résultat pour cette recherche.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppColors.gris),
+          ),
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _charger,
+      child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+        physics: const AlwaysScrollableScrollPhysics(),
+        itemCount: _entreesFiltrees.length,
+        itemBuilder: (context, index) {
+          final entree = _entreesFiltrees[index];
+          return Card(
+            elevation: 0,
+            margin: const EdgeInsets.only(bottom: 8),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: const BorderSide(color: Color(0xFFE0E6E0)),
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
+            child: ListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              title: Text(
+                'Entrée ${entree.numEntr}',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              subtitle: Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  '${entree.numMed} · +${entree.stockEntr} unité(s) · '
+                  '${entree.dateEntr}',
+                ),
+              ),
+              trailing: Row(
                 mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text(
-                    'Modifier Entrée',
-                    style: TextStyle(
-                      fontSize: 20.0,
-                      fontWeight: FontWeight.bold,
-                    ),
+                children: <Widget>[
+                  IconButton(
+                    tooltip: 'Modifier',
+                    icon: const Icon(Icons.edit_outlined, color: AppColors.bleu),
+                    onPressed: () => _modifier(entree),
                   ),
-                  const SizedBox(height: 16.0),
-                  TextField(
-                    controller: _entreeNumEntrController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      labelText: 'Numéro Entrée',
-                      filled: true,
-                      fillColor: Colors.green.withOpacity(0.2),
-                    ),
-                  ),
-                  const SizedBox(height: 16.0),
-                  TextField(
-                    controller: _entreeMedController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      labelText: 'Numéro Médicament',
-                      filled: true,
-                      fillColor: Colors.green.withOpacity(0.2),
-                    ),
-                  ),
-                  const SizedBox(height: 20.0),
-                  TextField(
-                    controller: _entreeStockController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      labelText: 'Stock Entrée',
-                      filled: true,
-                      fillColor: Colors.green.withOpacity(0.2),
-                    ),
-                    keyboardType: TextInputType.number,
-                  ),
-                  const SizedBox(height: 20.0),
-                  TextField(
-                    controller: _entreeDateController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      labelText: 'Date',
-                      filled: true,
-                      fillColor: Colors.green.withOpacity(0.2),
-                    ),
-                  ),
-                  const SizedBox(height: 20.0),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton(
-                        style: TextButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          backgroundColor: Colors.blue,
-                        ),
-                        child: const Text('Annuler'),
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                        },
-                      ),
-                      const SizedBox(width: 8.0),
-                      TextButton(
-                        style: TextButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          backgroundColor: Colors.green,
-                        ),
-                        child: const Text('Enregistrer'),
-                        onPressed: () {
-                          int stock = int.parse(_entreeStockController.text);
-                          _updateEntree(
-                            entree.id!,
-                            _entreeNumEntrController.text,
-                            _entreeMedController.text,
-                            stock,
-                            _entreeDateController.text,
-                          );
-                          Navigator.of(context).pop();
-                        },
-                      ),
-                    ],
+                  IconButton(
+                    tooltip: 'Supprimer',
+                    icon: const Icon(Icons.delete_outline, color: AppColors.rouge),
+                    onPressed: () => _supprimer(entree),
                   ),
                 ],
               ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
+}
 
-  Future<void> _confirmDeleteEntree(Entree entree) async {
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: false, // utilisateur doit cliquer sur un des boutons pour fermer la boîte de dialogue
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Confirmer la suppression'),
-          content: SingleChildScrollView(
-            child: ListBody(
-              children: <Widget>[
-                Text('Voulez-vous vraiment supprimer l\'entrée ${entree.numEntr} ?'),
-              ],
-            ),
-          ),
-          actions: <Widget>[
-            TextButton(
-              style: TextButton.styleFrom(
-                backgroundColor: Colors.blue, // bouton bleu pour "Annuler"
-              ),
-              child: const Text(
-                'Annuler',
-                style: TextStyle(color: Colors.white),
-              ),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-            ),
-            TextButton(
-              style: TextButton.styleFrom(
-                backgroundColor: Colors.pink, // bouton rose pour "Supprimer"
-              ),
-              child: const Text(
-                'Supprimer',
-                style: TextStyle(color: Colors.white),
-              ),
-              onPressed: () async {
-                await _deleteEntree(entree.id!);
-                Navigator.of(context).pop();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
+/// Dialogue de modification d'une entrée de stock.
+class _DialogueModificationEntree extends StatefulWidget {
+  const _DialogueModificationEntree({
+    required this.entree,
+    required this.numerosMedicaments,
+  });
 
-  Future<void> _updateEntree(int id, String numEntr, String numMed, int stockEntr, String dateEntr) async {
-    Entree entree = Entree(
-      id: id,
-      numEntr: numEntr,
-      numMed: numMed,
-      stockEntr: stockEntr,
-      dateEntr: dateEntr,
-    );
-    await _dbHelper.updateEntree(entree);
-    _refreshEntrees();
-  }
+  final Entree entree;
+  final List<String> numerosMedicaments;
 
-  Future<void> _deleteEntree(int id) async {
-    await _dbHelper.deleteEntree(id);
-    _refreshEntrees();
+  @override
+  State<_DialogueModificationEntree> createState() =>
+      _DialogueModificationEntreeState();
+}
+
+class _DialogueModificationEntreeState
+    extends State<_DialogueModificationEntree> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _numeroControleur;
+  late final TextEditingController _quantiteControleur;
+  late final TextEditingController _dateControleur;
+  late String? _medicamentSelectionne;
+  late List<String> _numeros;
+
+  @override
+  void initState() {
+    super.initState();
+    _numeroControleur = TextEditingController(text: widget.entree.numEntr);
+    _quantiteControleur =
+        TextEditingController(text: widget.entree.stockEntr.toString());
+    _dateControleur = TextEditingController(text: widget.entree.dateEntr);
+    _numeros = List<String>.from(widget.numerosMedicaments);
+    if (!_numeros.contains(widget.entree.numMed)) {
+      _numeros.insert(0, widget.entree.numMed);
+    }
+    _medicamentSelectionne = widget.entree.numMed;
   }
 
   @override
   void dispose() {
-    _searchController.dispose();
+    _numeroControleur.dispose();
+    _quantiteControleur.dispose();
+    _dateControleur.dispose();
     super.dispose();
+  }
+
+  Future<void> _choisirDate() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: analyserDate(_dateControleur.text) ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2101),
+    );
+    if (date == null || !mounted) return;
+    setState(() {
+      _dateControleur.text = formaterDate(date);
+    });
+  }
+
+  void _valider() {
+    if (!_formKey.currentState!.validate()) return;
+    if (_medicamentSelectionne == null) return;
+
+    Navigator.of(context).pop(
+      Entree(
+        id: widget.entree.id,
+        numEntr: _numeroControleur.text.trim(),
+        numMed: _medicamentSelectionne!,
+        stockEntr: Validators.versEntier(_quantiteControleur.text) ?? 0,
+        dateEntr: _dateControleur.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text("Modifier l'entrée"),
+      content: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              ChampTexte(
+                controleur: _numeroControleur,
+                label: "Numéro d'entrée",
+                icone: Icons.tag,
+                validateur: (valeur) => Validators.obligatoire(
+                  valeur,
+                  champ: "Le numéro d'entrée",
+                ),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: _medicamentSelectionne,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Médicament',
+                  prefixIcon: Icon(Icons.medication_outlined),
+                ),
+                items: _numeros
+                    .map(
+                      (numero) => DropdownMenuItem<String>(
+                        value: numero,
+                        child: Text(numero),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (valeur) {
+                  setState(() => _medicamentSelectionne = valeur);
+                },
+                validator: (valeur) =>
+                    valeur == null ? 'Sélectionnez un médicament.' : null,
+              ),
+              const SizedBox(height: 12),
+              ChampTexte(
+                controleur: _quantiteControleur,
+                label: 'Quantité reçue',
+                icone: Icons.inventory_2_outlined,
+                clavier: TextInputType.number,
+                formateurs: Saisies.chiffres,
+                validateur: (valeur) =>
+                    Validators.entier(valeur, champ: 'La quantité'),
+              ),
+              const SizedBox(height: 12),
+              ChampTexte(
+                controleur: _dateControleur,
+                label: "Date d'entrée",
+                icone: Icons.calendar_today_outlined,
+                lectureSeule: true,
+                onTap: _choisirDate,
+                validateur: (valeur) => Validators.obligatoire(
+                  valeur,
+                  champ: "La date d'entrée",
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Annuler'),
+        ),
+        FilledButton(
+          onPressed: _valider,
+          child: const Text('Enregistrer'),
+        ),
+      ],
+    );
   }
 }

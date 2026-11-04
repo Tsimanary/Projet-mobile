@@ -1,5 +1,5 @@
 class Medic {
-  int? id;
+  final int? id;
   final String numMed;
   final String designMed;
   int prixMed;
@@ -14,18 +14,21 @@ class Medic {
   });
 
   factory Medic.fromMap(Map<String, dynamic> json) => Medic(
-    id: json["id"],
-    numMed: json["numMed"].toString(),
-    designMed: json["designMed"].toString(),
-    prixMed: json["prixMed"] as int, // Assurez-vous que prixMed est bien de type int dans la base de données
-    stockMed: json["stockMed"] as int, // Assurez-vous que stockMed est bien de type int dans la base de données
-  );
+        id: (json['id'] as num?)?.toInt(),
+        numMed: (json['numMed'] ?? '').toString(),
+        designMed: (json['designMed'] ?? '').toString(),
+        prixMed: (json['prixMed'] as num?)?.toInt() ?? 0,
+        stockMed: (json['stockMed'] as num?)?.toInt() ?? 0,
+      );
 
-  Map<String, dynamic> toMap() => {
-    "id": id,
-    "numMed": numMed,
-    "designMed": designMed,
-    "prixMed": prixMed,
-    "stockMed": stockMed,
-  };
+  Map<String, dynamic> toMap() => <String, dynamic>{
+        if (id != null) 'id': id,
+        'numMed': numMed,
+        'designMed': designMed,
+        'prixMed': prixMed,
+        'stockMed': stockMed,
+      };
+
+  @override
+  String toString() => 'Medic($numMed, $designMed, $prixMed Ar, stock $stockMed)';
 }
