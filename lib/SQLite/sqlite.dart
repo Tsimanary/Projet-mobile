@@ -6,6 +6,7 @@ import '../Models/entr.dart';
 import '../Models/lot.dart';
 import '../Models/medic.dart';
 import '../Models/users.dart';
+import '../core/backup_format.dart';
 import '../core/exceptions.dart';
 import '../core/format.dart';
 import '../core/securite.dart';
@@ -896,6 +897,67 @@ class DatabaseHelper {
       final restants = lot.joursRestants(maintenant: maintenant);
       return restants != null && restants <= jours;
     }).toList();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sauvegarde et restauration
+  // ---------------------------------------------------------------------------
+
+  /// Contenu complet de la base, table par table (ordre de restauration).
+  Future<Map<String, Object?>> exporterTout() async {
+    final db = await database;
+    final tables = <String, Object?>{};
+    for (final table in tablesSauvegardees) {
+      tables[table] = await db.query(table);
+    }
+    return tables;
+  }
+
+  /// Remplace **toutes** les données par celles de [tables].
+  ///
+  /// Une transaction unique : en cas d'erreur (fichier incomplet, ligne
+  /// corrompue), la base reste exactement dans son état précédent.
+  Future<void> restaurerTout(Map<String, Object?> tables) async {
+    final db = await database;
+
+    await db.transaction((txn) async {
+      for (final table in tablesSauvegardees) {
+        final lignes = tables[table];
+        if (lignes is! List) {
+          throw OperationRefuseeException(
+            'Sauvegarde incomplète : la table « $table » est absente.',
+          );
+        }
+
+        await txn.delete(table);
+
+        for (final ligne in lignes) {
+          if (ligne is! Map) {
+            throw OperationRefuseeException(
+              'Sauvegarde corrompue : ligne invalide dans « $table ».',
+            );
+          }
+          await txn.insert(table, Map<String, Object?>.from(ligne));
+        }
+      }
+
+      // Le stock est dérivé des lots : on le recalcule après restauration.
+      final medicaments = await txn.query('medics', columns: <String>['numMed']);
+      for (final medicament in medicaments) {
+        await _recalculerStock(txn, (medicament['numMed'] ?? '').toString());
+      }
+    });
+  }
+
+  /// Nombre de lignes par table (indicateur d'occupation).
+  Future<Map<String, int>> compterLignes() async {
+    final db = await database;
+    final resultat = <String, int>{};
+    for (final table in tablesSauvegardees) {
+      final lignes = await db.rawQuery('SELECT COUNT(*) AS total FROM $table');
+      resultat[table] = (lignes.first['total'] as num?)?.toInt() ?? 0;
+    }
+    return resultat;
   }
 
   // ---------------------------------------------------------------------------

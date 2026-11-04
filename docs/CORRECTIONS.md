@@ -231,8 +231,58 @@ dates ISO, hachage, démarrage de l'application.
 
 ### 8.7 Toujours ouvert
 
-- **Sauvegarde / restauration** : nécessite un choix de package (`share_plus`)
-  ou un backend — décision produit.
 - Rôles et administration des comptes, Argon2id, chiffrement de la base.
 - Signature de release, `applicationId`, icônes, fiche Play Store.
 - Codes-barres (scan de lot) et inventaire physique.
+
+- Rôles et administration des comptes, Argon2id, chiffrement de la base.
+- Signature de release, `applicationId`, icônes, fiche Play Store.
+- Codes-barres (scan de lot) et inventaire physique.
+
+---
+
+## 9. Itération 4 — sauvegarde, export et restauration
+
+### 9.1 Le problème
+
+Une base SQLite locale sans sauvegarde, c'est une officine qui perd tout sur un
+téléphone volé, cassé ou réinitialisé — et aucune migration possible vers un
+nouvel appareil. C'était la limite la plus grave après les lots.
+
+### 9.2 Solution retenue
+
+Un **fichier JSON unique, versionné**, contenant les six tables
+(`users`, `medics`, `lots`, `mouvements_stock`, `entrees`, `achats`).
+
+| Choix | Raison |
+|---|---|
+| JSON et non copie du `.db` | lisible, portable entre versions, diffable, indépendant du chiffrement à venir |
+| Partage système (`share_plus`) | aucune permission de stockage, l'utilisateur choisit la destination (courriel, Drive) |
+| Écriture dans le répertoire temporaire | toujours accessible en écriture, compatible FileProvider |
+| Restauration en **une transaction** | en cas de fichier corrompu, la base reste intacte |
+| Stock **recalculé** après restauration | l'invariant `stockMed == Σ lots.quantiteRestante` est rétabli même si le fichier vient d'une version antérieure |
+
+### 9.3 Validation du fichier
+
+`analyserSauvegarde` (pur, testé) refuse avec un message clair :
+- un contenu qui n'est pas du JSON ;
+- un JSON qui ne vient pas de l'application (`application != appharmacie`) ;
+- une version de format inconnue ou **plus récente** que l'application ;
+- une table manquante.
+
+Aucune donnée n'est écrite avant validation complète **et** confirmation
+explicite de l'utilisateur (dialogue rouge rappelant que l'opération est
+irréversible).
+
+### 9.4 Interface
+
+Nouvel écran **Sauvegarde** (icône disquette dans la barre du haut) :
+compteurs de données, bouton de création + partage, bouton de restauration,
+et rappel des bonnes pratiques (données de santé : conserver hors du téléphone).
+Après restauration, retour à l'écran de connexion — les comptes ont pu changer.
+
+### 9.5 Tests
+
+6 tests supplémentaires (`test/backup_format_test.dart`) : aller-retour complet,
+refus du non-JSON, refus d'un fichier étranger, refus d'une version future,
+détection d'une table manquante, exhaustivité de la liste des tables.

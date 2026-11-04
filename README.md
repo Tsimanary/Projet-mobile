@@ -19,6 +19,7 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
 | **Entrées** | Réception par lot (numéro de lot + date de péremption), historique complet |
 | **Ventes** | Vente multi-lignes, contrôle de stock, consommation **FEFO**, facture PDF A4 |
 | **Lots** | Suivi des péremptions, filtres (≤ 90 j, ≤ 30 j, périmés), ordre FEFO |
+| **Sauvegarde** | Export JSON complet partagé (courriel, Drive) et restauration transactionnelle |
 
 ---
 
@@ -41,6 +42,9 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
    un prix ne réécrit pas le chiffre d'affaires passé.
 8. **Dates stockées en `AAAA-MM-JJ`**, affichées en `JJ/MM/AAAA`.
 9. **Mots de passe hachés**, migration transparente des comptes existants.
+10. **Une sauvegarde = un fichier JSON versionné** contenant toutes les tables ;
+    la restauration est transactionnelle (tout ou rien) et recalcule le stock
+    depuis les lots.
 
 Ces règles sont couvertes par des tests (`test/`).
 
@@ -72,6 +76,7 @@ La CI GitHub Actions (`.github/workflows/flutter.yml`) exécute `analyze` et
 
 - `test/stock_rules_test.dart` — disponibilité, allocation **FEFO**, montants
 - `test/validators_test.dart` — validation, formatage, dates ISO
+- `test/backup_format_test.dart` — format de sauvegarde, refus des fichiers invalides
 - `test/securite_test.dart` — hachage et vérification des mots de passe
 - `test/widget_test.dart` — démarrage de l'application
 
@@ -83,6 +88,8 @@ La CI GitHub Actions (`.github/workflows/flutter.yml`) exécute `analyze` et
 lib/
 ├── main.dart                 # Application (thème + écran de démarrage)
 ├── core/                     # Socle transverse
+│   ├── backup.dart           # Export / partage / restauration du fichier
+│   ├── backup_format.dart    # Format JSON versionné (pur, testable)
 │   ├── exceptions.dart       # Exceptions métier (messages utilisateur)
 │   ├── feedback.dart         # Snackbars
 │   ├── format.dart           # Montants, dates ISO, parsing tolérant
@@ -95,7 +102,7 @@ lib/
 ├── SQLite/sqlite.dart        # Données, transactions, lots, migrations
 ├── Authentification/         # Connexion, création de compte
 ├── dialog/                   # Formulaires (médicament, entrée, vente)
-├── pages/                    # Écrans (accueil, médicaments, entrées, ventes, lots)
+├── pages/                    # Écrans (accueil, médicaments, entrées, ventes, lots, sauvegarde)
 └── assets/images/
 ```
 
@@ -130,12 +137,12 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
 
 ## Limites connues
 
-- **Pas de sauvegarde / restauration** : les données vivent sur un seul appareil.
-- Pas de synchronisation multi-postes.
+- Les données vivent sur **un seul appareil** : la sauvegarde JSON permet de
+  migrer ou de restaurer, pas de synchroniser plusieurs postes en temps réel.
 - Un seul compte par installation (pas d'écran d'administration).
 - Facture sans mentions légales ni TVA.
-- Signature de release en mode debug ; `applicationId` à personnaliser
-  (`com.example.appharmacie`).
+- Signature de release à configurer (`android/key.properties`, voir
+  `docs/PUBLICATION_PLAY_STORE.md`).
 
 Voir `docs/AUDIT_PROJET.md` (analyse initiale) et `docs/CORRECTIONS.md`
 (journal des corrections).
