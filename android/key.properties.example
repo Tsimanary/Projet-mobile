@@ -1,0 +1,16 @@
+# Modèle à copier en `android/key.properties` (fichier ignoré par Git).
+#
+# 1. Générer la clé de signature (une seule fois, à conserver précieusement) :
+#
+#    keytool -genkey -v -keystore ~/appharmacie-upload.jks \
+#      -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+#
+# 2. Copier ce fichier en `android/key.properties` et renseigner les valeurs.
+#
+# ⚠️ Ne jamais committer la clé ni ce fichier rempli. Perdre la clé = ne plus
+# pouvoir publier de mise à jour de l'application.
+
+storePassword=mot-de-passe-du-keystore
+keyPassword=mot-de-passe-de-la-cle
+keyAlias=upload
+storeFile=/chemin/absolu/vers/appharmacie-upload.jks

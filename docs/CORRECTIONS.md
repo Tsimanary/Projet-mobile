@@ -286,3 +286,64 @@ Après restauration, retour à l'écran de connexion — les comptes ont pu chan
 6 tests supplémentaires (`test/backup_format_test.dart`) : aller-retour complet,
 refus du non-JSON, refus d'un fichier étranger, refus d'une version future,
 détection d'une table manquante, exhaustivité de la liste des tables.
+
+---
+
+## 10. Itération 5 — Android : identité, signature, publication
+
+### 10.1 Identité de l'application
+
+| Élément | Avant | Après |
+|---|---|---|
+| `applicationId` | `com.example.appharmacie` (placeholder) | `com.tsimanary.appharmacie` |
+| `namespace` / package Kotlin | `com.example.appharmacie` | `com.tsimanary.appharmacie` (fichier déplacé) |
+| Icône | icône Flutter par défaut | croix + mortier, déclinée 48 → 192 px |
+| Écran de démarrage | fond blanc vide | fond blanc + logo centré |
+
+L'`applicationId` est définitif : le changer après publication créerait une
+nouvelle application.
+
+### 10.2 Chaîne de compilation
+
+| Outil | Avant | Après |
+|---|---|---|
+| AGP | 7.3.0 | **8.3.2** |
+| Gradle | 7.6.3 | **8.4** |
+| Kotlin | 1.7.10 | **1.9.22** |
+| Java source/target | 1.8 | **17** (compilé et ciblé) |
+
+Ces versions sont celles attendues par Flutter 3.22 et par les plugins ajoutés à
+l'itération 4 (`share_plus`, `file_picker`).
+
+### 10.3 Signature de release
+
+`android/app/build.gradle` lit `android/key.properties` s'il existe :
+
+```groovy
+signingConfig = keystorePropertiesFile.exists()
+        ? signingConfigs.release
+        : signingConfigs.debug
+```
+
+- En développement, rien ne change (`flutter run --release` fonctionne).
+- En production, il suffit de créer `key.properties` (modèle fourni :
+  `android/key.properties.example`) pour que `flutter build appbundle` produise
+  un paquet signé.
+- Le keystore et `key.properties` sont déjà exclus par `android/.gitignore`.
+
+### 10.4 Livrables de publication
+
+- `store/jeu-icone-512.png` — icône exigée par la Play Console.
+- `store/icone-1024.png` — source de l'icône (retouches futures).
+- `docs/PUBLICATION_PLAY_STORE.md` — procédure complète : keystore, build,
+  fiche, *Data safety*, test interne, mises à jour, check-list.
+- `docs/CONFIDENTIALITE.md` + `docs/confidentialite.html` — politique de
+  confidentialité (aucune collecte, données locales, fichier de sauvegarde).
+
+### 10.5 Toujours ouvert (choix produit ou dépendance externe)
+
+- **Argon2id** et **chiffrement de la base** (`sqflite_sqlcipher`) : impact sur
+  les performances et migration à planifier.
+- **Rôles** (vendeur / gestionnaire) : nécessite un écran d'administration.
+- **Verrouillage biométrique** (`local_auth`).
+- **Synchronisation multi-postes** : présuppose un backend.

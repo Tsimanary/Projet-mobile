@@ -57,6 +57,11 @@ flutter pub get
 flutter run
 ```
 
+Publication sur le Play Store : voir [`docs/PUBLICATION_PLAY_STORE.md`](docs/PUBLICATION_PLAY_STORE.md)
+(clé de signature, `flutter build appbundle`, fiche Play Store, check-list).
+Politique de confidentialité : [`docs/CONFIDENTIALITE.md`](docs/CONFIDENTIALITE.md)
+et sa version publiable [`docs/confidentialite.html`](docs/confidentialite.html).
+
 > ⚠️ `pubspec.lock` n'est pas régénéré automatiquement dans ce dépôt :
 > `flutter pub get` le met à jour.
 
@@ -104,6 +109,10 @@ lib/
 ├── dialog/                   # Formulaires (médicament, entrée, vente)
 ├── pages/                    # Écrans (accueil, médicaments, entrées, ventes, lots, sauvegarde)
 └── assets/images/
+
+android/                      # AGP 8.3.2, Gradle 8.4, Kotlin 1.9.22, JDK 17
+docs/                         # audit, corrections, publication, confidentialité
+store/                        # icônes du Play Store (1024 et 512 px)
 ```
 
 ### Base de données (schéma v3)
@@ -129,6 +138,9 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
 - Mots de passe hachés avec sel aléatoire (migration transparente).
 - Sauvegarde Android désactivée (`android:allowBackup="false"`).
 - Requêtes SQL entièrement paramétrées.
+- **Aucune permission Android demandée** : l'application n'a ni accès à
+  internet, ni au stockage, ni à la localisation. Les données ne sortent du
+  téléphone que par l'export de sauvegarde, déclenché par l'utilisateur.
 
 **Avant une mise en production** : Argon2id, chiffrement de la base
 (`sqflite_sqlcipher`), rôles utilisateurs, verrouillage biométrique.
@@ -141,8 +153,10 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
   migrer ou de restaurer, pas de synchroniser plusieurs postes en temps réel.
 - Un seul compte par installation (pas d'écran d'administration).
 - Facture sans mentions légales ni TVA.
-- Signature de release à configurer (`android/key.properties`, voir
-  `docs/PUBLICATION_PLAY_STORE.md`).
+- La signature de release nécessite **votre** keystore
+  (`android/key.properties`, voir `docs/PUBLICATION_PLAY_STORE.md`) ; sans lui,
+  les builds sont signés avec les clés de debug.
+- Base non chiffrée au repos, pas encore de code d'accès applicatif.
 
 Voir `docs/AUDIT_PROJET.md` (analyse initiale) et `docs/CORRECTIONS.md`
 (journal des corrections).
