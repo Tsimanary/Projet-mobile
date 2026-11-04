@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../Models/lot.dart';
 import '../Models/medic.dart';
 import '../SQLite/sqlite.dart';
 import '../core/format.dart';
@@ -32,6 +33,7 @@ class _AccueilPageState extends State<AccueilPage> {
   List<Medic> _ruptures = <Medic>[];
   List<Medic> _stockFaible = <Medic>[];
   List<_VenteAgregee> _meilleuresVentes = <_VenteAgregee>[];
+  List<Lot> _lotsEnAlerte = <Lot>[];
 
   @override
   void initState() {
@@ -51,6 +53,7 @@ class _AccueilPageState extends State<AccueilPage> {
       final medics = await _base.getAllMedics();
       final ventesParMedicament = await _base.ventesParMedicament();
       final recette = await _base.chiffreAffairesTotal();
+      final lotsEnAlerte = await _base.getLotsEnAlerte(jours: 90);
 
       final medicsParNumero = <String, Medic>{
         for (final medic in medics) medic.numMed: medic,
@@ -83,6 +86,7 @@ class _AccueilPageState extends State<AccueilPage> {
         _ruptures = ruptures;
         _stockFaible = stockFaible;
         _meilleuresVentes = ventes.take(5).toList(growable: false);
+        _lotsEnAlerte = lotsEnAlerte;
         _chargement = false;
       });
     } catch (erreur) {
@@ -172,6 +176,13 @@ class _AccueilPageState extends State<AccueilPage> {
               couleur: AppColors.orange,
               etiquette: 'À réapprovisionner',
             ),
+          ),
+          const SizedBox(height: 12),
+          _carte(
+            titre: 'Péremptions (≤ 90 jours)',
+            icone: Icons.event_busy_outlined,
+            couleurIcone: AppColors.orange,
+            contenu: _listeLots(),
           ),
           const SizedBox(height: 12),
           _carte(
@@ -268,6 +279,58 @@ class _AccueilPageState extends State<AccueilPage> {
           )
           .toList(),
     );
+  }
+
+  Widget _listeLots() {
+    if (_lotsEnAlerte.isEmpty) {
+      return const Text(
+        'Aucun lot périmé ou proche de la péremption.',
+        style: TextStyle(color: AppColors.gris),
+      );
+    }
+
+    return Column(
+      children: <Widget>[
+        for (final lot in _lotsEnAlerte.take(4))
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    '${lot.designMed ?? lot.numMed} · ${lot.libelle}',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _etiquettePeremption(lot),
+                  style: TextStyle(
+                    color: lot.estPerime() ? AppColors.rouge : AppColors.orange,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (_lotsEnAlerte.length > 4)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+                    "+ ${_lotsEnAlerte.length - 4} autre(s) — voir l'onglet Lots",
+              style: const TextStyle(fontSize: 12, color: AppColors.gris),
+            ),
+          ),
+      ],
+    );
+  }
+
+  String _etiquettePeremption(Lot lot) {
+    final jours = lot.joursRestants();
+    if (jours == null) return 'pér. inconnue';
+    if (jours < 0) return 'Périmé (${-jours} j)';
+    return 'J-$jours';
   }
 
   Widget _listeMeilleuresVentes() {

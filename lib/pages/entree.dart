@@ -13,8 +13,9 @@ import '../dialog/addEntree.dart';
 
 /// Historique des entrées de stock.
 ///
-/// Chaque entrée est une ligne distincte : modifier ou supprimer une entrée
-/// ajuste le stock du médicament par différence (jamais par recalcul global).
+/// Chaque entrée alimente un lot daté. La modifier ou la supprimer ajuste le
+/// stock par les mouvements (jamais par un recalcul global), et l'opération
+/// est refusée si le lot a déjà été partiellement vendu.
 class EntreePage extends StatefulWidget {
   const EntreePage({super.key});
 
@@ -73,7 +74,8 @@ class _EntreePageState extends State<EntreePage> {
         .where(
           (entree) =>
               entree.numEntr.toLowerCase().contains(recherche) ||
-              entree.numMed.toLowerCase().contains(recherche),
+              entree.numMed.toLowerCase().contains(recherche) ||
+              (entree.numeroLot ?? '').toLowerCase().contains(recherche),
         )
         .toList();
   }
@@ -107,6 +109,9 @@ class _EntreePageState extends State<EntreePage> {
       if (!mounted) return;
       afficherMessage(context, 'Entrée mise à jour.');
       await _charger();
+    } on OperationRefuseeException catch (erreur) {
+      if (!mounted) return;
+      afficherMessage(context, erreur.toString(), erreur: true);
     } on EntiteIntrouvableException catch (erreur) {
       if (!mounted) return;
       afficherMessage(context, erreur.toString(), erreur: true);
@@ -121,8 +126,8 @@ class _EntreePageState extends State<EntreePage> {
       context,
       titre: "Supprimer l'entrée",
       message:
-          "Supprimer l'entrée ${entree.numEntr} ?\n"
-          'Le stock du médicament sera diminué de ${entree.stockEntr} unité(s).',
+          'Supprimer l\'entrée ${entree.numEntr} ?\n'
+          'Le stock sera diminué de ${entree.stockEntr} unité(s).',
       libelleConfirmer: 'Supprimer',
     );
     if (!confirme || !mounted) return;
@@ -132,6 +137,9 @@ class _EntreePageState extends State<EntreePage> {
       if (!mounted) return;
       afficherMessage(context, 'Entrée supprimée.');
       await _charger();
+    } on OperationRefuseeException catch (erreur) {
+      if (!mounted) return;
+      afficherMessage(context, erreur.toString(), erreur: true);
     } catch (erreur) {
       if (!mounted) return;
       afficherMessage(context, 'Suppression impossible : $erreur', erreur: true);
@@ -148,7 +156,7 @@ class _EntreePageState extends State<EntreePage> {
             child: TextField(
               controller: _rechercheControleur,
               decoration: const InputDecoration(
-                labelText: 'Rechercher (numéro ou médicament)',
+                labelText: 'Rechercher (n° entrée, médicament, lot)',
                 prefixIcon: Icon(Icons.search),
               ),
             ),
@@ -214,6 +222,9 @@ class _EntreePageState extends State<EntreePage> {
         itemCount: _entreesFiltrees.length,
         itemBuilder: (context, index) {
           final entree = _entreesFiltrees[index];
+          final jours = joursAvant(entree.datePeremption);
+          final perime = jours != null && jours < 0;
+
           return Card(
             elevation: 0,
             margin: const EdgeInsets.only(bottom: 8),
@@ -230,9 +241,23 @@ class _EntreePageState extends State<EntreePage> {
               ),
               subtitle: Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  '${entree.numMed} · +${entree.stockEntr} unité(s) · '
-                  '${entree.dateEntr}',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      '${entree.numMed} · +${entree.stockEntr} unité(s) · '
+                      '${afficherDate(entree.dateEntr)}',
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${entree.numeroLot ?? 'Lot sans numéro'} · '
+                      'pér. ${afficherDate(entree.datePeremption)}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: perime ? AppColors.rouge : AppColors.gris,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               trailing: Row(
@@ -278,6 +303,8 @@ class _DialogueModificationEntreeState
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _numeroControleur;
   late final TextEditingController _quantiteControleur;
+  late final TextEditingController _lotControleur;
+  late final TextEditingController _peremptionControleur;
   late final TextEditingController _dateControleur;
   late String? _medicamentSelectionne;
   late List<String> _numeros;
@@ -288,7 +315,11 @@ class _DialogueModificationEntreeState
     _numeroControleur = TextEditingController(text: widget.entree.numEntr);
     _quantiteControleur =
         TextEditingController(text: widget.entree.stockEntr.toString());
-    _dateControleur = TextEditingController(text: widget.entree.dateEntr);
+    _lotControleur =
+        TextEditingController(text: widget.entree.numeroLot ?? '');
+    _peremptionControleur =
+        TextEditingController(text: afficherDate(widget.entree.datePeremption));
+    _dateControleur = TextEditingController(text: afficherDate(widget.entree.dateEntr));
     _numeros = List<String>.from(widget.numerosMedicaments);
     if (!_numeros.contains(widget.entree.numMed)) {
       _numeros.insert(0, widget.entree.numMed);
@@ -300,20 +331,25 @@ class _DialogueModificationEntreeState
   void dispose() {
     _numeroControleur.dispose();
     _quantiteControleur.dispose();
+    _lotControleur.dispose();
+    _peremptionControleur.dispose();
     _dateControleur.dispose();
     super.dispose();
   }
 
-  Future<void> _choisirDate() async {
+  Future<void> _choisirDate({
+    required TextEditingController controleur,
+    DateTime? initiale,
+  }) async {
     final date = await showDatePicker(
       context: context,
-      initialDate: analyserDate(_dateControleur.text) ?? DateTime.now(),
+      initialDate: initiale ?? analyserDate(controleur.text) ?? DateTime.now(),
       firstDate: DateTime(2000),
       lastDate: DateTime(2101),
     );
     if (date == null || !mounted) return;
     setState(() {
-      _dateControleur.text = formaterDate(date);
+      controleur.text = formaterDate(date);
     });
   }
 
@@ -321,13 +357,16 @@ class _DialogueModificationEntreeState
     if (!_formKey.currentState!.validate()) return;
     if (_medicamentSelectionne == null) return;
 
+    final numeroLot = _lotControleur.text.trim();
     Navigator.of(context).pop(
       Entree(
         id: widget.entree.id,
         numEntr: _numeroControleur.text.trim(),
         numMed: _medicamentSelectionne!,
         stockEntr: Validators.versEntier(_quantiteControleur.text) ?? 0,
-        dateEntr: _dateControleur.text.trim(),
+        dateEntr: versIso(_dateControleur.text) ?? _dateControleur.text.trim(),
+        numeroLot: numeroLot.isEmpty ? null : numeroLot,
+        datePeremption: versIso(_peremptionControleur.text),
       ),
     );
   }
@@ -385,14 +424,32 @@ class _DialogueModificationEntreeState
               ),
               const SizedBox(height: 12),
               ChampTexte(
-                controleur: _dateControleur,
-                label: "Date d'entrée",
-                icone: Icons.calendar_today_outlined,
+                controleur: _lotControleur,
+                label: 'Numéro de lot (facultatif)',
+                icone: Icons.qr_code_2,
+              ),
+              const SizedBox(height: 12),
+              ChampTexte(
+                controleur: _peremptionControleur,
+                label: 'Date de péremption',
+                icone: Icons.event_busy_outlined,
                 lectureSeule: true,
-                onTap: _choisirDate,
+                onTap: () => _choisirDate(controleur: _peremptionControleur),
                 validateur: (valeur) => Validators.obligatoire(
                   valeur,
-                  champ: "La date d'entrée",
+                  champ: 'La date de péremption',
+                ),
+              ),
+              const SizedBox(height: 12),
+              ChampTexte(
+                controleur: _dateControleur,
+                label: 'Date de réception',
+                icone: Icons.calendar_today_outlined,
+                lectureSeule: true,
+                onTap: () => _choisirDate(controleur: _dateControleur),
+                validateur: (valeur) => Validators.obligatoire(
+                  valeur,
+                  champ: 'La date de réception',
                 ),
               ),
             ],

@@ -7,7 +7,15 @@ class Entree {
   final String numEntr;
   final String numMed;
   final int stockEntr;
+
+  /// Date de réception au format `AAAA-MM-JJ`.
   final String dateEntr;
+
+  /// Numéro de lot reçu (facultatif).
+  final String? numeroLot;
+
+  /// Date de péremption du lot au format `AAAA-MM-JJ` (null si inconnue).
+  final String? datePeremption;
 
   const Entree({
     this.id,
@@ -15,6 +23,8 @@ class Entree {
     required this.numMed,
     required this.stockEntr,
     required this.dateEntr,
+    this.numeroLot,
+    this.datePeremption,
   });
 
   factory Entree.fromMap(Map<String, dynamic> json) => Entree(
@@ -23,6 +33,8 @@ class Entree {
         numMed: (json['numMed'] ?? '').toString(),
         stockEntr: (json['stockEntr'] as num?)?.toInt() ?? 0,
         dateEntr: (json['dateEntr'] ?? '').toString(),
+        numeroLot: json['numeroLot'] as String?,
+        datePeremption: json['datePeremption'] as String?,
       );
 
   Map<String, dynamic> toMap() => <String, dynamic>{
@@ -31,5 +43,7 @@ class Entree {
         'numMed': numMed,
         'stockEntr': stockEntr,
         'dateEntr': dateEntr,
+        'numeroLot': numeroLot,
+        'datePeremption': datePeremption,
       };
 }

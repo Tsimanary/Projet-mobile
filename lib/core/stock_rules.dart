@@ -1,10 +1,11 @@
 import 'exceptions.dart';
 
-/// Règles de calcul de stock.
+/// Règles de stock **pures** (aucune dépendance Flutter ni SQLite).
 ///
-/// Ces fonctions sont **pures** (aucune dépendance Flutter ni SQLite) :
-/// c'est le cœur métier de l'application, et c'est donc la partie qui doit
-/// être testée en priorité (voir `test/stock_rules_test.dart`).
+/// Depuis l'introduction des lots, la vérité du stock est la somme des
+/// `quantiteRestante` des lots : ces fonctions ne calculent donc plus de
+/// « nouveau stock », elles valident la disponibilité et allouent les lots à
+/// consommer (FEFO).
 class StockRules {
   const StockRules._();
 
@@ -13,81 +14,26 @@ class StockRules {
     return quantite > 0 && stock >= quantite;
   }
 
-  /// Stock après réception de [quantiteEntree] unités.
-  static int apresEntree({
-    required int stockActuel,
-    required int quantiteEntree,
-  }) {
-    if (quantiteEntree <= 0) {
-      throw ArgumentError.value(
-        quantiteEntree,
-        'quantiteEntree',
-        'La quantité entrée doit être supérieure à zéro.',
-      );
-    }
-    return stockActuel + quantiteEntree;
-  }
-
-  /// Stock après vente de [quantiteVendue] unités.
-  ///
-  /// Lève [StockInsuffisantException] si le stock ne couvre pas la quantité.
-  static int apresVente({
-    required int stockActuel,
-    required int quantiteVendue,
+  /// Lève [StockInsuffisantException] si [disponible] ne couvre pas [demande].
+  static void verifierDisponibilite({
+    required int disponible,
+    required int demande,
     required String designation,
   }) {
-    if (quantiteVendue <= 0) {
+    if (demande <= 0) {
       throw ArgumentError.value(
-        quantiteVendue,
-        'quantiteVendue',
-        'La quantité vendue doit être supérieure à zéro.',
+        demande,
+        'demande',
+        'La quantité demandée doit être supérieure à zéro.',
       );
     }
-    if (stockActuel < quantiteVendue) {
+    if (disponible < demande) {
       throw StockInsuffisantException(
         designation: designation,
-        demande: quantiteVendue,
-        disponible: stockActuel,
+        demande: demande,
+        disponible: disponible,
       );
     }
-    return stockActuel - quantiteVendue;
-  }
-
-  /// Stock après modification de la quantité d'une entrée existante.
-  static int apresModificationEntree({
-    required int stockActuel,
-    required int ancienneQuantite,
-    required int nouvelleQuantite,
-  }) {
-    if (ancienneQuantite <= 0 || nouvelleQuantite <= 0) {
-      throw ArgumentError(
-        'Les quantités d\'entrée doivent être supérieures à zéro.',
-      );
-    }
-    return stockActuel + (nouvelleQuantite - ancienneQuantite);
-  }
-
-  /// Stock après modification de la quantité d'une vente existante.
-  static int apresModificationVente({
-    required int stockActuel,
-    required int ancienneQuantite,
-    required int nouvelleQuantite,
-    required String designation,
-  }) {
-    if (ancienneQuantite <= 0 || nouvelleQuantite <= 0) {
-      throw ArgumentError(
-        'Les quantités vendues doivent être supérieures à zéro.',
-      );
-    }
-    final variation = nouvelleQuantite - ancienneQuantite;
-    if (variation > 0 && stockActuel < variation) {
-      throw StockInsuffisantException(
-        designation: designation,
-        demande: variation,
-        disponible: stockActuel,
-      );
-    }
-    return stockActuel - variation;
   }
 
   /// Montant d'une ligne de facture.
@@ -97,4 +43,79 @@ class StockRules {
     }
     return prixUnitaire * quantite;
   }
+}
+
+/// Lot disponible pour une sortie de stock (vue minimale pour l'allocation).
+class LotDisponible {
+  const LotDisponible({
+    required this.id,
+    required this.quantiteRestante,
+    this.datePeremption,
+  });
+
+  final int id;
+  final int quantiteRestante;
+
+  /// Date `AAAA-MM-JJ`, ou `null` si inconnue.
+  final String? datePeremption;
+}
+
+/// Quantité prélevée sur un lot donné.
+class AllocationLot {
+  const AllocationLot({required this.lotId, required this.quantite});
+
+  final int lotId;
+  final int quantite;
+
+  @override
+  String toString() => 'Lot $lotId × $quantite';
+}
+
+/// Règle FEFO (*First Expired, First Out*) : on sort d'abord le lot dont la
+/// péremption est la plus proche ; les lots sans date connue partent en dernier.
+///
+/// Retourne les allocations dans l'ordre de consommation. La quantité
+/// réellement allouée peut être inférieure à la demande : c'est à l'appelant
+/// de vérifier `quantiteAllouee(...)` (ou d'appeler
+/// [StockRules.verifierDisponibilite]) avant d'écrire.
+List<AllocationLot> allouerLots({
+  required List<LotDisponible> lots,
+  required int quantite,
+}) {
+  if (quantite <= 0) {
+    throw ArgumentError.value(
+      quantite,
+      'quantite',
+      'La quantité à prélever doit être supérieure à zéro.',
+    );
+  }
+
+  final tries = lots
+      .where((lot) => lot.quantiteRestante > 0)
+      .toList(growable: false)
+    ..sort((a, b) {
+      final cleA = a.datePeremption ?? '9999-12-31';
+      final cleB = b.datePeremption ?? '9999-12-31';
+      final comparaison = cleA.compareTo(cleB);
+      if (comparaison != 0) return comparaison;
+      return a.id.compareTo(b.id);
+    });
+
+  final allocations = <AllocationLot>[];
+  var reste = quantite;
+
+  for (final lot in tries) {
+    if (reste == 0) break;
+    final prelevement =
+        lot.quantiteRestante >= reste ? reste : lot.quantiteRestante;
+    allocations.add(AllocationLot(lotId: lot.id, quantite: prelevement));
+    reste -= prelevement;
+  }
+
+  return allocations;
+}
+
+/// Total réellement alloué par [allouerLots].
+int quantiteAllouee(List<AllocationLot> allocations) {
+  return allocations.fold<int>(0, (total, a) => total + a.quantite);
 }

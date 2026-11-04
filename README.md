@@ -1,9 +1,11 @@
 # AppHarmacie
 
 Application mobile **Flutter** de gestion d'officine : médicaments, entrées de
-stock, ventes, facturation PDF et tableau de bord.
+stock **par lot**, ventes, péremptions, facturation PDF et tableau de bord.
 
 Données stockées localement (SQLite) — l'application fonctionne hors ligne.
+
+[![CI](https://github.com/Tsimanary/Projet-mobile/actions/workflows/flutter.yml/badge.svg)](https://github.com/Tsimanary/Projet-mobile/actions/workflows/flutter.yml)
 
 ---
 
@@ -11,30 +13,36 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
 
 | Module | Contenu |
 |---|---|
-| **Authentification** | Compte unique local, mot de passe haché (sel + SHA-256) |
-| **Tableau de bord** | Recette cumulée, ruptures, stocks faibles, top 5 des ventes |
+| **Authentification** | Compte local, mot de passe haché (sel + SHA-256) |
+| **Tableau de bord** | Recette cumulée, ruptures, stocks faibles, péremptions ≤ 90 j, top 5 des ventes |
 | **Médicaments** | Ajout, recherche, modification, suppression protégée |
-| **Entrées** | Réceptions de stock historisées, modification/suppression avec ajustement |
-| **Ventes** | Vente multi-lignes, contrôle de stock, facture PDF A4 imprimable |
+| **Entrées** | Réception par lot (numéro de lot + date de péremption), historique complet |
+| **Ventes** | Vente multi-lignes, contrôle de stock, consommation **FEFO**, facture PDF A4 |
+| **Lots** | Suivi des péremptions, filtres (≤ 90 j, ≤ 30 j, périmés), ordre FEFO |
 
 ---
 
 ## Règles de gestion (garanties par le code)
 
-1. **Une seule source de vérité pour le stock** : `medics.stockMed` n'est
-   modifié que par les entrées et les ventes, dans des transactions SQLite.
-2. **Une entrée = une ligne d'historique.** Aucune fusion : modifier une entrée
-   applique uniquement la **différence** au stock.
-3. **Une vente est atomique.** Toutes les lignes sont validées avant la première
-   écriture : impossible d'enregistrer une vente partielle.
-4. **Le prix est figé au moment de la vente** (`achats.prixUnitaire`) : changer
+1. **`medics.stockMed` est une projection des lots.** Il est recalculé
+   (`SUM(lots.quantiteRestante)`) après chaque mouvement, dans une transaction :
+   aucune saisie manuelle, aucune dérive possible.
+2. **Une entrée = une ligne d'historique + un lot.** Le lot porte la péremption ;
+   modifier une entrée annule puis réapplique son mouvement.
+3. **Les sorties sont en FEFO** : le lot dont la péremption est la plus proche
+   part en premier ; les lots sans date connue partent en dernier.
+4. **Chaque mouvement est tracé** (`mouvements_stock`) : annuler ou modifier une
+   vente remet exactement les quantités dans les bons lots.
+5. **Une entrée dont le lot a déjà été partiellement vendu ne peut pas être
+   supprimée** (message explicite) : on corrige par une nouvelle entrée/sortie.
+6. **Une vente est atomique** : toutes les lignes sont validées avant la
+   première écriture.
+7. **Le prix est figé au moment de la vente** (`achats.prixUnitaire`) : changer
    un prix ne réécrit pas le chiffre d'affaires passé.
-5. **Un médicament avec historique ne peut pas être supprimé** (protection de
-   l'intégrité des ventes et des entrées).
-6. **Les mots de passe ne sont jamais stockés en clair.** Les comptes créés par
-   les versions précédentes sont migrés automatiquement à la première connexion.
+8. **Dates stockées en `AAAA-MM-JJ`**, affichées en `JJ/MM/AAAA`.
+9. **Mots de passe hachés**, migration transparente des comptes existants.
 
-Ces règles sont couvertes par des tests unitaires (`test/stock_rules_test.dart`).
+Ces règles sont couvertes par des tests (`test/`).
 
 ---
 
@@ -45,23 +53,27 @@ flutter pub get
 flutter run
 ```
 
-> ⚠️ Le fichier `pubspec.lock` n'a pas été régénéré après le nettoyage des
-> dépendances : `flutter pub get` le met à jour automatiquement.
+> ⚠️ `pubspec.lock` n'est pas régénéré automatiquement dans ce dépôt :
+> `flutter pub get` le met à jour.
 
 Prérequis : Flutter ≥ 3.22 (Dart ≥ 3.4).
 
 ---
 
-## Tests
+## Tests et intégration continue
 
 ```bash
+flutter analyze
 flutter test
 ```
 
-- `test/stock_rules_test.dart` — calculs de stock (entrées, ventes, modifications)
-- `test/validators_test.dart` — validation de formulaires et formatage
+La CI GitHub Actions (`.github/workflows/flutter.yml`) exécute `analyze` et
+`test` sur chaque pull request et sur `main`.
+
+- `test/stock_rules_test.dart` — disponibilité, allocation **FEFO**, montants
+- `test/validators_test.dart` — validation, formatage, dates ISO
 - `test/securite_test.dart` — hachage et vérification des mots de passe
-- `test/widget_test.dart` — démarrage de l'application et validation du formulaire
+- `test/widget_test.dart` — démarrage de l'application
 
 ---
 
@@ -72,54 +84,58 @@ lib/
 ├── main.dart                 # Application (thème + écran de démarrage)
 ├── core/                     # Socle transverse
 │   ├── exceptions.dart       # Exceptions métier (messages utilisateur)
-│   ├── feedback.dart         # Snackbars (succès / erreur)
-│   ├── format.dart           # Montants, dates, parsing tolérant
+│   ├── feedback.dart         # Snackbars
+│   ├── format.dart           # Montants, dates ISO, parsing tolérant
 │   ├── securite.dart         # Hachage des mots de passe
-│   ├── stock_rules.dart      # Règles de stock pures et testables
+│   ├── stock_rules.dart      # Règles pures : disponibilité + FEFO
 │   ├── theme.dart            # Palette et thème Material 3
 │   ├── validators.dart       # Validateurs de formulaires
 │   └── widgets/              # ChampTexte, dialogue de confirmation
-├── Models/                   # Entités (Medic, Entree, Achat, Users)
-├── SQLite/sqlite.dart        # Accès aux données + transactions + migrations
+├── Models/                   # Entités (Medic, Lot, Entree, Achat, Users)
+├── SQLite/sqlite.dart        # Données, transactions, lots, migrations
 ├── Authentification/         # Connexion, création de compte
 ├── dialog/                   # Formulaires (médicament, entrée, vente)
-├── pages/                    # Écrans (accueil, médicaments, entrées, ventes)
-└── assets/images/            # Images
+├── pages/                    # Écrans (accueil, médicaments, entrées, ventes, lots)
+└── assets/images/
 ```
 
-### Base de données
-
-Version de schéma : **2** (migration automatique depuis la version 1).
+### Base de données (schéma v3)
 
 | Table | Rôle |
 |---|---|
 | `users` | Comptes (`usrPassword` = hachage, `usrSalt` = sel) |
-| `medics` | Catalogue + stock courant |
-| `entrees` | Historique des réceptions (une ligne par réception) |
+| `medics` | Catalogue + stock courant (projection des lots) |
+| `lots` | Lots reçus : quantité, restant, péremption, date de réception |
+| `mouvements_stock` | Journal des entrées/sorties (`reference` = `ENTREE:<id>` ou `ACHAT:<id>`) |
+| `entrees` | Historique des réceptions (une ligne par réception, avec lot) |
 | `achats` | Lignes de vente, avec `prixUnitaire` figé |
+
+**Migrations** : `onUpgrade` gère v1 → v2 (hachage, prix figé) puis v2 → v3
+(lots, mouvements, dates ISO). Le stock existant est repris dans un lot
+technique `STOCK-REPRIS` sans péremption : aucune donnée n'est inventée et
+l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
 
 ---
 
 ## Sécurité
 
-- Mots de passe hachés avec sel aléatoire (migration transparente des anciens comptes).
+- Mots de passe hachés avec sel aléatoire (migration transparente).
 - Sauvegarde Android désactivée (`android:allowBackup="false"`).
-- Requêtes SQL entièrement paramétrées (aucune injection possible).
+- Requêtes SQL entièrement paramétrées.
 
-**À faire avant une mise en production** : Argon2id au lieu de SHA-256, chiffrement
-de la base (`sqflite_sqlcipher`), rôles utilisateurs, verrouillage biométrique.
+**Avant une mise en production** : Argon2id, chiffrement de la base
+(`sqflite_sqlcipher`), rôles utilisateurs, verrouillage biométrique.
 
 ---
 
 ## Limites connues
 
-- Pas de gestion des **lots** ni des **dates de péremption** (exigence pharmaceutique).
-- Pas de **sauvegarde / restauration** : les données vivent sur un seul appareil.
+- **Pas de sauvegarde / restauration** : les données vivent sur un seul appareil.
 - Pas de synchronisation multi-postes.
-- Un seul compte par installation (pas d'écran d'administration des utilisateurs).
+- Un seul compte par installation (pas d'écran d'administration).
 - Facture sans mentions légales ni TVA.
-- Signature de release encore en mode debug ; `applicationId` à personnaliser
-  avant publication.
+- Signature de release en mode debug ; `applicationId` à personnaliser
+  (`com.example.appharmacie`).
 
 Voir `docs/AUDIT_PROJET.md` (analyse initiale) et `docs/CORRECTIONS.md`
-(détail des corrections apportées).
+(journal des corrections).

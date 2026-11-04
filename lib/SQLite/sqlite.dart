@@ -3,19 +3,25 @@ import 'package:sqflite/sqflite.dart';
 
 import '../Models/acht.dart';
 import '../Models/entr.dart';
+import '../Models/lot.dart';
 import '../Models/medic.dart';
 import '../Models/users.dart';
 import '../core/exceptions.dart';
+import '../core/format.dart';
 import '../core/securite.dart';
 import '../core/stock_rules.dart';
 
 /// Accès unique à la base SQLite locale.
 ///
 /// Invariants garantis par cette classe :
-///  * `medics.stockMed` n'est modifié qu'à l'intérieur d'une transaction ;
-///  * une vente multi-lignes est entièrement validée **avant** la moindre
-///    écriture (aucune vente partielle possible) ;
-///  * une entrée de stock est toujours ajoutée (jamais fusionnée) ;
+///  * `medics.stockMed` est une **projection** de `lots.quantiteRestante` :
+///    il est recalculé après chaque mouvement, jamais saisi à la main ;
+///  * toute écriture de stock se fait dans une transaction ;
+///  * une entrée crée (ou complète) un lot, et une vente le consomme en
+///    **FEFO** (péremption la plus proche d'abord) ;
+///  * chaque mouvement est historisé dans `mouvements_stock` : une vente ou
+///    une entrée peuvent donc être annulées sans dérive ;
+///  * les dates sont stockées en `AAAA-MM-JJ` ;
 ///  * les mots de passe sont hachés (avec migration des comptes existants) ;
 ///  * un médicament possédant un historique ne peut pas être supprimé.
 class DatabaseHelper {
@@ -27,7 +33,25 @@ class DatabaseHelper {
   factory DatabaseHelper() => _instance;
 
   static const String _nomBase = 'pharmacie.db';
-  static const int _versionBase = 2;
+  static const int _versionBase = 3;
+
+  static const String _sqlLots = 'CREATE TABLE IF NOT EXISTS lots ('
+      'id INTEGER PRIMARY KEY AUTOINCREMENT, '
+      'numMed TEXT NOT NULL, '
+      'numeroLot TEXT, '
+      'quantiteRecue INTEGER NOT NULL, '
+      'quantiteRestante INTEGER NOT NULL, '
+      'datePeremption TEXT, '
+      'dateReception TEXT NOT NULL)';
+
+  static const String _sqlMouvements = 'CREATE TABLE IF NOT EXISTS mouvements_stock ('
+      'id INTEGER PRIMARY KEY AUTOINCREMENT, '
+      'numMed TEXT NOT NULL, '
+      'lotId INTEGER, '
+      'type TEXT NOT NULL, '
+      'quantite INTEGER NOT NULL, '
+      'reference TEXT, '
+      'dateMouvement TEXT NOT NULL)';
 
   Database? _base;
   Future<Database>? _ouvertureEnCours;
@@ -73,7 +97,9 @@ class DatabaseHelper {
           'numEntr TEXT, '
           'numMed TEXT NOT NULL, '
           'stockEntr INTEGER NOT NULL, '
-          'dateEntr TEXT)',
+          'dateEntr TEXT, '
+          'numeroLot TEXT, '
+          'datePeremption TEXT)',
         );
         await db.execute(
           'CREATE TABLE achats ('
@@ -85,6 +111,8 @@ class DatabaseHelper {
           'nbr INTEGER NOT NULL, '
           'prixUnitaire INTEGER)',
         );
+        await db.execute(_sqlLots);
+        await db.execute(_sqlMouvements);
         await _creerIndex(db);
       },
       onUpgrade: (db, ancienneVersion, nouvelleVersion) async {
@@ -92,11 +120,19 @@ class DatabaseHelper {
           // v1 -> v2 : hachage des mots de passe + prix figé sur les ventes.
           await _ajouterColonneSiAbsente(db, 'users', 'usrSalt', 'TEXT');
           await _ajouterColonneSiAbsente(db, 'achats', 'prixUnitaire', 'INTEGER');
-          await _creerIndex(db);
         }
+        if (ancienneVersion < 3) {
+          // v2 -> v3 : lots, mouvements de stock et dates ISO.
+          await _migrerVers3(db);
+        }
+        await _creerIndex(db);
       },
     );
   }
+
+  // ---------------------------------------------------------------------------
+  // Schéma, index et migrations
+  // ---------------------------------------------------------------------------
 
   Future<void> _creerIndex(Database db) async {
     const instructions = <String>[
@@ -104,9 +140,93 @@ class DatabaseHelper {
       'CREATE INDEX IF NOT EXISTS idx_entrees_numMed ON entrees(numMed)',
       'CREATE INDEX IF NOT EXISTS idx_achats_numMed ON achats(numMed)',
       'CREATE INDEX IF NOT EXISTS idx_achats_numAchat ON achats(numAchat)',
+      'CREATE INDEX IF NOT EXISTS idx_lots_numMed ON lots(numMed, datePeremption)',
+      'CREATE INDEX IF NOT EXISTS idx_mvt_reference ON mouvements_stock(reference)',
+      'CREATE INDEX IF NOT EXISTS idx_mvt_numMed ON mouvements_stock(numMed)',
     ];
     for (final instruction in instructions) {
       await db.execute(instruction);
+    }
+  }
+
+  Future<void> _migrerVers3(Database db) async {
+    await _ajouterColonneSiAbsente(db, 'entrees', 'numeroLot', 'TEXT');
+    await _ajouterColonneSiAbsente(db, 'entrees', 'datePeremption', 'TEXT');
+    await db.execute(_sqlLots);
+    await db.execute(_sqlMouvements);
+    await _convertirDatesEnIso(db);
+    await _reprendreStockExistant(db);
+  }
+
+  /// Convertit les dates `JJ/MM/AAAA` (ou `JJ/MM/AA`) héritées en `AAAA-MM-JJ`.
+  Future<void> _convertirDatesEnIso(Database db) async {
+    final entrees = await db.query('entrees', columns: <String>['id', 'dateEntr']);
+    for (final ligne in entrees) {
+      final ancienne = (ligne['dateEntr'] ?? '').toString();
+      final iso = versIso(ancienne);
+      if (iso != null && iso != ancienne) {
+        await db.update(
+          'entrees',
+          <String, Object?>{'dateEntr': iso},
+          where: 'id = ?',
+          whereArgs: <Object?>[ligne['id']],
+        );
+      }
+    }
+
+    final achats = await db.query('achats', columns: <String>['id', 'dateAchat']);
+    for (final ligne in achats) {
+      final ancienne = (ligne['dateAchat'] ?? '').toString();
+      final iso = versIso(ancienne);
+      if (iso != null && iso != ancienne) {
+        await db.update(
+          'achats',
+          <String, Object?>{'dateAchat': iso},
+          where: 'id = ?',
+          whereArgs: <Object?>[ligne['id']],
+        );
+      }
+    }
+  }
+
+  /// Le stock existant (antérieur aux lots) est repris dans un lot technique
+  /// « STOCK-REPRIS » sans date de péremption : aucune donnée n'est inventée,
+  /// et l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
+  Future<void> _reprendreStockExistant(Database db) async {
+    final resultat = await db.rawQuery('SELECT COUNT(*) AS total FROM lots');
+    final dejaMigre = ((resultat.first['total'] as num?)?.toInt() ?? 0) > 0;
+    if (dejaMigre) return;
+
+    final medicaments = await db.query(
+      'medics',
+      columns: <String>['numMed', 'stockMed'],
+    );
+    final aujourdHui = formaterDateIso(DateTime.now());
+
+    for (final medicament in medicaments) {
+      final stock = (medicament['stockMed'] as num?)?.toInt() ?? 0;
+      final numMed = (medicament['numMed'] ?? '').toString();
+      if (numMed.isEmpty) continue;
+
+      if (stock < 0) {
+        await db.update(
+          'medics',
+          <String, Object?>{'stockMed': 0},
+          where: 'numMed = ?',
+          whereArgs: <Object?>[numMed],
+        );
+        continue;
+      }
+      if (stock == 0) continue;
+
+      await db.insert('lots', <String, Object?>{
+        'numMed': numMed,
+        'numeroLot': 'STOCK-REPRIS',
+        'quantiteRecue': stock,
+        'quantiteRestante': stock,
+        'datePeremption': null,
+        'dateReception': aujourdHui,
+      });
     }
   }
 
@@ -147,9 +267,7 @@ class DatabaseHelper {
   ) async {
     final medic = await _medicParNumero(executeur, numMed);
     if (medic == null) {
-      throw EntiteIntrouvableException(
-        'Médicament « $numMed » introuvable.',
-      );
+      throw EntiteIntrouvableException('Médicament « $numMed » introuvable.');
     }
     return medic;
   }
@@ -168,15 +286,16 @@ class DatabaseHelper {
     return (lignes.first['stockMed'] as num?)?.toInt() ?? 0;
   }
 
-  /// Écrit le stock absolu (jamais un delta) : idempotent et testable.
-  Future<void> _ecrireStock(
-    DatabaseExecutor executeur,
-    String numMed,
-    int nouveauStock,
-  ) async {
+  /// Recalcule `stockMed` à partir des lots : une seule source de vérité.
+  Future<void> _recalculerStock(DatabaseExecutor executeur, String numMed) async {
+    final resultat = await executeur.rawQuery(
+      'SELECT COALESCE(SUM(quantiteRestante), 0) AS total FROM lots WHERE numMed = ?',
+      <Object?>[numMed],
+    );
+    final total = (resultat.first['total'] as num?)?.toInt() ?? 0;
     await executeur.update(
       'medics',
-      <String, Object?>{'stockMed': nouveauStock < 0 ? 0 : nouveauStock},
+      <String, Object?>{'stockMed': total < 0 ? 0 : total},
       where: 'numMed = ?',
       whereArgs: <Object?>[numMed],
     );
@@ -192,6 +311,211 @@ class DatabaseHelper {
       <Object?>[numMed],
     );
     return (resultat.first['total'] as num?)?.toInt() ?? 0;
+  }
+
+  Future<List<Map<String, Object?>>> _mouvements(
+    DatabaseExecutor executeur,
+    String reference,
+  ) {
+    return executeur.query(
+      'mouvements_stock',
+      where: 'reference = ?',
+      whereArgs: <Object?>[reference],
+    );
+  }
+
+  /// Annule les mouvements d'une vente : le stock retourne dans ses lots.
+  Future<Set<String>> _restaurerReference(
+    DatabaseExecutor executeur,
+    String reference,
+  ) async {
+    final mouvements = await _mouvements(executeur, reference);
+    final medicaments = <String>{};
+
+    for (final mouvement in mouvements) {
+      final numMed = (mouvement['numMed'] ?? '').toString();
+      if (numMed.isNotEmpty) medicaments.add(numMed);
+
+      final lotId = (mouvement['lotId'] as num?)?.toInt();
+      final quantite = (mouvement['quantite'] as num?)?.toInt() ?? 0;
+      if (lotId != null && quantite != 0) {
+        // quantite est négative pour une sortie : la soustraire recrédite le lot.
+        await executeur.rawUpdate(
+          'UPDATE lots SET quantiteRestante = quantiteRestante - ? WHERE id = ?',
+          <Object?>[quantite, lotId],
+        );
+      }
+    }
+
+    await executeur.delete(
+      'mouvements_stock',
+      where: 'reference = ?',
+      whereArgs: <Object?>[reference],
+    );
+
+    return medicaments;
+  }
+
+  /// Annule une entrée : refuse si le lot a déjà été partiellement vendu.
+  Future<Set<String>> _retirerEntree(
+    DatabaseExecutor executeur,
+    int entreeId,
+  ) async {
+    final reference = 'ENTREE:$entreeId';
+    final mouvements = await _mouvements(executeur, reference);
+    final medicaments = <String>{};
+
+    for (final mouvement in mouvements) {
+      final numMed = (mouvement['numMed'] ?? '').toString();
+      if (numMed.isNotEmpty) medicaments.add(numMed);
+
+      final lotId = (mouvement['lotId'] as num?)?.toInt();
+      final quantite = (mouvement['quantite'] as num?)?.toInt() ?? 0;
+      if (lotId == null || quantite == 0) continue;
+
+      final lignes = await executeur.query(
+        'lots',
+        columns: <String>['quantiteRestante'],
+        where: 'id = ?',
+        whereArgs: <Object?>[lotId],
+        limit: 1,
+      );
+      final restante =
+          lignes.isEmpty ? 0 : (lignes.first['quantiteRestante'] as num?)?.toInt() ?? 0;
+      if (restante < quantite) {
+        throw const OperationRefuseeException(
+          'Impossible : une partie de ce lot a déjà été vendue. '
+          'Enregistrez une sortie ou une entrée de correction.',
+        );
+      }
+
+      await executeur.rawUpdate(
+        'UPDATE lots SET quantiteRestante = quantiteRestante - ? WHERE id = ?',
+        <Object?>[quantite, lotId],
+      );
+    }
+
+    await executeur.delete(
+      'mouvements_stock',
+      where: 'reference = ?',
+      whereArgs: <Object?>[reference],
+    );
+
+    return medicaments;
+  }
+
+  /// Consomme [quantite] unités en FEFO et historise un mouvement par lot.
+  Future<void> _consommerFefo(
+    DatabaseExecutor executeur, {
+    required String numMed,
+    required int quantite,
+    required String reference,
+    required String designation,
+  }) async {
+    final lignes = await executeur.query(
+      'lots',
+      columns: <String>['id', 'quantiteRestante', 'datePeremption'],
+      where: 'numMed = ? AND quantiteRestante > 0',
+      whereArgs: <Object?>[numMed],
+    );
+
+    final disponibles = lignes
+        .map(
+          (ligne) => LotDisponible(
+            id: (ligne['id'] as num).toInt(),
+            quantiteRestante: (ligne['quantiteRestante'] as num?)?.toInt() ?? 0,
+            datePeremption: ligne['datePeremption'] as String?,
+          ),
+        )
+        .toList();
+
+    final allocations = allouerLots(lots: disponibles, quantite: quantite);
+    StockRules.verifierDisponibilite(
+      disponible: quantiteAllouee(allocations),
+      demande: quantite,
+      designation: designation,
+    );
+
+    final horodatage = formaterHorodatage(DateTime.now());
+    for (final allocation in allocations) {
+      await executeur.rawUpdate(
+        'UPDATE lots SET quantiteRestante = quantiteRestante - ? WHERE id = ?',
+        <Object?>[allocation.quantite, allocation.lotId],
+      );
+      await executeur.insert('mouvements_stock', <String, Object?>{
+        'numMed': numMed,
+        'lotId': allocation.lotId,
+        'type': 'SORTIE',
+        'quantite': -allocation.quantite,
+        'reference': reference,
+        'dateMouvement': horodatage,
+      });
+    }
+  }
+
+  /// Enregistre le mouvement d'entrée : crée ou complète le lot correspondant.
+  Future<void> _mouvementEntree(
+    DatabaseExecutor executeur, {
+    required int entreeId,
+    required Entree entree,
+  }) async {
+    final numeroLot = (entree.numeroLot ?? '').trim();
+    final peremption = entree.datePeremption;
+
+    var lotId = 0;
+
+    // Un même couple (numéro de lot, péremption) désigne le même lot physique :
+    // une nouvelle réception l'incrémente au lieu de dupliquer la ligne.
+    final lotExistant = await executeur.query(
+      'lots',
+      where: "numMed = ? AND IFNULL(numeroLot, '') = ? "
+          "AND IFNULL(datePeremption, '') = ?",
+      whereArgs: <Object?>[entree.numMed, numeroLot, peremption ?? ''],
+      limit: 1,
+    );
+
+    if (lotExistant.isNotEmpty) {
+      lotId = (lotExistant.first['id'] as num).toInt();
+      await executeur.rawUpdate(
+        'UPDATE lots SET quantiteRecue = quantiteRecue + ?, '
+        'quantiteRestante = quantiteRestante + ? WHERE id = ?',
+        <Object?>[entree.stockEntr, entree.stockEntr, lotId],
+      );
+    } else {
+      lotId = await executeur.insert('lots', <String, Object?>{
+        'numMed': entree.numMed,
+        'numeroLot': numeroLot.isEmpty ? null : numeroLot,
+        'quantiteRecue': entree.stockEntr,
+        'quantiteRestante': entree.stockEntr,
+        'datePeremption': peremption,
+        'dateReception': entree.dateEntr,
+      });
+    }
+
+    await executeur.insert('mouvements_stock', <String, Object?>{
+      'numMed': entree.numMed,
+      'lotId': lotId,
+      'type': 'ENTREE',
+      'quantite': entree.stockEntr,
+      'reference': 'ENTREE:$entreeId',
+      'dateMouvement': formaterHorodatage(DateTime.now()),
+    });
+  }
+
+  void _verifierEntree(Entree entree) {
+    if (entree.numEntr.trim().isEmpty) {
+      throw ArgumentError("Le numéro d'entrée est obligatoire.");
+    }
+    if (entree.numMed.trim().isEmpty) {
+      throw ArgumentError('Le médicament est obligatoire.');
+    }
+    if (entree.stockEntr <= 0) {
+      throw ArgumentError.value(
+        entree.stockEntr,
+        'stockEntr',
+        'La quantité entrée doit être supérieure à zéro.',
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -274,7 +598,10 @@ class DatabaseHelper {
 
   Future<List<Medic>> getAllMedics() async {
     final db = await database;
-    final lignes = await db.query('medics', orderBy: 'designMed COLLATE NOCASE ASC');
+    final lignes = await db.query(
+      'medics',
+      orderBy: 'designMed COLLATE NOCASE ASC',
+    );
     return lignes.map((ligne) => Medic.fromMap(ligne)).toList();
   }
 
@@ -287,7 +614,7 @@ class DatabaseHelper {
       limit: 1,
     );
     if (lignes.isEmpty) {
-      throw EntiteIntrouvableException('Médicament introuvable.');
+      throw const EntiteIntrouvableException('Médicament introuvable.');
     }
     return Medic.fromMap(lignes.first);
   }
@@ -298,9 +625,8 @@ class DatabaseHelper {
       'medics',
       columns: <String>['id'],
       where: saufId == null ? 'numMed = ?' : 'numMed = ? AND id <> ?',
-      whereArgs: saufId == null
-          ? <Object?>[numMed]
-          : <Object?>[numMed, saufId],
+      whereArgs:
+          saufId == null ? <Object?>[numMed] : <Object?>[numMed, saufId],
       limit: 1,
     );
     return lignes.isNotEmpty;
@@ -333,7 +659,7 @@ class DatabaseHelper {
   }
 
   /// Met à jour le médicament **sans toucher au stock** : le stock est
-  /// exclusivement piloté par les entrées et les ventes.
+  /// exclusivement piloté par les lots, les entrées et les ventes.
   Future<int> updateMedic(Medic medic) async {
     final db = await database;
     final id = medic.id;
@@ -396,7 +722,25 @@ class DatabaseHelper {
       );
     }
 
-    return db.delete('medics', where: 'id = ?', whereArgs: <Object?>[id]);
+    return db.transaction((txn) async {
+      final stock = await _stockActuel(txn, medic.numMed);
+      if (stock > 0) {
+        throw OperationRefuseeException(
+          'Suppression impossible : « ${medic.designMed} » possède encore '
+          '$stock unité(s) en stock.',
+        );
+      }
+      await txn.delete(
+        'lots',
+        where: 'numMed = ?',
+        whereArgs: <Object?>[medic.numMed],
+      );
+      return txn.delete(
+        'medics',
+        where: 'id = ?',
+        whereArgs: <Object?>[id],
+      );
+    });
   }
 
   Future<List<String>> getAllMedNum() async {
@@ -418,18 +762,12 @@ class DatabaseHelper {
 
   Future<List<Entree>> getAllEntrees() async {
     final db = await database;
-    final lignes = await db.query('entrees', orderBy: 'id DESC');
+    final lignes = await db.query('entrees', orderBy: 'dateEntr DESC, id DESC');
     return lignes.map((ligne) => Entree.fromMap(ligne)).toList();
   }
 
   Future<int> insertEntree(Entree entree) async {
-    if (entree.stockEntr <= 0) {
-      throw ArgumentError.value(
-        entree.stockEntr,
-        'stockEntr',
-        'La quantité entrée doit être supérieure à zéro.',
-      );
-    }
+    _verifierEntree(entree);
     final db = await database;
 
     return db.transaction((txn) async {
@@ -440,14 +778,12 @@ class DatabaseHelper {
         'numMed': entree.numMed,
         'stockEntr': entree.stockEntr,
         'dateEntr': entree.dateEntr,
+        'numeroLot': _numeroLot(entree.numeroLot),
+        'datePeremption': entree.datePeremption,
       });
 
-      final stock = await _stockActuel(txn, entree.numMed);
-      final nouveauStock = StockRules.apresEntree(
-        stockActuel: stock,
-        quantiteEntree: entree.stockEntr,
-      );
-      await _ecrireStock(txn, entree.numMed, nouveauStock);
+      await _mouvementEntree(txn, entreeId: id, entree: entree);
+      await _recalculerStock(txn, entree.numMed);
 
       return id;
     });
@@ -458,18 +794,13 @@ class DatabaseHelper {
     if (id == null) {
       throw ArgumentError("Identifiant de l'entrée manquant.");
     }
-    if (entree.stockEntr <= 0) {
-      throw ArgumentError.value(
-        entree.stockEntr,
-        'stockEntr',
-        'La quantité entrée doit être supérieure à zéro.',
-      );
-    }
+    _verifierEntree(entree);
     final db = await database;
 
     return db.transaction((txn) async {
       final lignes = await txn.query(
         'entrees',
+        columns: <String>['id'],
         where: 'id = ?',
         whereArgs: <Object?>[id],
         limit: 1,
@@ -477,7 +808,11 @@ class DatabaseHelper {
       if (lignes.isEmpty) {
         throw const EntiteIntrouvableException('Entrée introuvable.');
       }
-      final ancienne = Entree.fromMap(lignes.first);
+      await _medicParNumeroObligatoire(txn, entree.numMed);
+
+      // Retire l'ancienne entrée (refusé si le lot a déjà été vendu),
+      // puis applique la nouvelle : aucune dérive possible.
+      final touches = await _retirerEntree(txn, id);
 
       final nombreModifie = await txn.update(
         'entrees',
@@ -486,33 +821,17 @@ class DatabaseHelper {
           'numMed': entree.numMed,
           'stockEntr': entree.stockEntr,
           'dateEntr': entree.dateEntr,
+          'numeroLot': _numeroLot(entree.numeroLot),
+          'datePeremption': entree.datePeremption,
         },
         where: 'id = ?',
         whereArgs: <Object?>[id],
       );
 
-      if (ancienne.numMed == entree.numMed) {
-        final stock = await _stockActuel(txn, entree.numMed);
-        final nouveauStock = StockRules.apresModificationEntree(
-          stockActuel: stock,
-          ancienneQuantite: ancienne.stockEntr,
-          nouvelleQuantite: entree.stockEntr,
-        );
-        await _ecrireStock(txn, entree.numMed, nouveauStock);
-      } else {
-        // Le médicament a changé : on retire l'ancienne quantité puis on
-        // crédite la nouvelle, jamais un recalcul global.
-        final ancienMedic = await _medicParNumero(txn, ancienne.numMed);
-        if (ancienMedic != null) {
-          final stockAncien = await _stockActuel(txn, ancienne.numMed);
-          await _ecrireStock(txn, ancienne.numMed, stockAncien - ancienne.stockEntr);
-        }
-        final stockNouveau = await _stockActuel(txn, entree.numMed);
-        final nouveauStock = StockRules.apresEntree(
-          stockActuel: stockNouveau,
-          quantiteEntree: entree.stockEntr,
-        );
-        await _ecrireStock(txn, entree.numMed, nouveauStock);
+      await _mouvementEntree(txn, entreeId: id, entree: entree);
+
+      for (final numMed in <String>{...touches, entree.numMed}) {
+        await _recalculerStock(txn, numMed);
       }
 
       return nombreModifie;
@@ -525,27 +844,58 @@ class DatabaseHelper {
     return db.transaction((txn) async {
       final lignes = await txn.query(
         'entrees',
+        columns: <String>['id'],
         where: 'id = ?',
         whereArgs: <Object?>[id],
         limit: 1,
       );
       if (lignes.isEmpty) return 0;
 
-      final entree = Entree.fromMap(lignes.first);
+      final touches = await _retirerEntree(txn, id);
       final nombreSupprime = await txn.delete(
         'entrees',
         where: 'id = ?',
         whereArgs: <Object?>[id],
       );
 
-      final medic = await _medicParNumero(txn, entree.numMed);
-      if (medic != null) {
-        final stock = await _stockActuel(txn, entree.numMed);
-        await _ecrireStock(txn, entree.numMed, stock - entree.stockEntr);
+      for (final numMed in touches) {
+        await _recalculerStock(txn, numMed);
       }
 
       return nombreSupprime;
     });
+  }
+
+  String? _numeroLot(String? numero) {
+    final valeur = (numero ?? '').trim();
+    return valeur.isEmpty ? null : valeur;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lots et péremptions
+  // ---------------------------------------------------------------------------
+
+  /// Lots avec leur désignation de médicament, triés par péremption (FEFO).
+  Future<List<Lot>> getAllLots({bool disponiblesSeulement = true}) async {
+    final db = await database;
+    final filtre = disponiblesSeulement ? 'WHERE l.quantiteRestante > 0 ' : '';
+    final lignes = await db.rawQuery(
+      'SELECT l.*, m.designMed AS designMed '
+      'FROM lots l LEFT JOIN medics m ON m.numMed = l.numMed '
+      '$filtre'
+      'ORDER BY CASE WHEN l.datePeremption IS NULL THEN 1 ELSE 0 END, '
+      'l.datePeremption ASC, l.id ASC',
+    );
+    return lignes.map((ligne) => Lot.fromMap(ligne)).toList();
+  }
+
+  /// Lots périmés ou dont la péremption tombe dans [jours] jours.
+  Future<List<Lot>> getLotsEnAlerte({int jours = 90, DateTime? maintenant}) async {
+    final lots = await getAllLots();
+    return lots.where((lot) {
+      final restants = lot.joursRestants(maintenant: maintenant);
+      return restants != null && restants <= jours;
+    }).toList();
   }
 
   // ---------------------------------------------------------------------------
@@ -554,7 +904,7 @@ class DatabaseHelper {
 
   Future<List<Achat>> getAllAchats() async {
     final db = await database;
-    final lignes = await db.query('achats', orderBy: 'id DESC');
+    final lignes = await db.query('achats', orderBy: 'dateAchat DESC, id DESC');
     return lignes.map((ligne) => Achat.fromMap(ligne)).toList();
   }
 
@@ -590,13 +940,11 @@ class DatabaseHelper {
 
       for (final entree in quantitesParMedicament.entries) {
         final stock = await _stockActuel(txn, entree.key);
-        if (!StockRules.stockSuffisant(stock: stock, quantite: entree.value)) {
-          throw StockInsuffisantException(
-            designation: medicsParNumero[entree.key]!.designMed,
-            demande: entree.value,
-            disponible: stock,
-          );
-        }
+        StockRules.verifierDisponibilite(
+          disponible: stock,
+          demande: entree.value,
+          designation: medicsParNumero[entree.key]!.designMed,
+        );
       }
 
       // 2. Écriture, une fois tout validé.
@@ -611,27 +959,28 @@ class DatabaseHelper {
           'nbr': ligne.nbr,
           'prixUnitaire': ligne.prixUnitaire ?? medic.prixMed,
         });
+
+        await _consommerFefo(
+          txn,
+          numMed: ligne.numMed,
+          quantite: ligne.nbr,
+          reference: 'ACHAT:$id',
+          designation: medic.designMed,
+        );
+
         premierId ??= id;
       }
 
-      for (final entree in quantitesParMedicament.entries) {
-        final medic = medicsParNumero[entree.key]!;
-        final stock = await _stockActuel(txn, entree.key);
-        final nouveauStock = StockRules.apresVente(
-          stockActuel: stock,
-          quantiteVendue: entree.value,
-          designation: medic.designMed,
-        );
-        await _ecrireStock(txn, entree.key, nouveauStock);
+      for (final numMed in quantitesParMedicament.keys) {
+        await _recalculerStock(txn, numMed);
       }
 
       return premierId ?? 0;
     });
   }
 
-  /// Raccourci pour une vente à une seule ligne.
-  Future<int> insertAchat(Achat achat) => insertAchats(<Achat>[achat]);
-
+  /// Modifie une ligne de vente : l'ancienne consommation est intégralement
+  /// annulée (retour dans les lots) avant d'appliquer la nouvelle.
   Future<int> updateAchat(Achat achat) async {
     final id = achat.id;
     if (id == null) {
@@ -659,6 +1008,8 @@ class DatabaseHelper {
       final ancien = Achat.fromMap(lignes.first);
       final nouveauMedic = await _medicParNumeroObligatoire(txn, achat.numMed);
 
+      final touches = await _restaurerReference(txn, 'ACHAT:$id');
+
       final nombreModifie = await txn.update(
         'achats',
         <String, Object?>{
@@ -667,34 +1018,22 @@ class DatabaseHelper {
           'nomClient': achat.nomClient,
           'dateAchat': achat.dateAchat,
           'nbr': achat.nbr,
-          'prixUnitaire': achat.prixUnitaire ?? ancien.prixUnitaire ?? nouveauMedic.prixMed,
+          'prixUnitaire': achat.prixUnitaire ?? nouveauMedic.prixMed,
         },
         where: 'id = ?',
         whereArgs: <Object?>[id],
       );
 
-      if (ancien.numMed == achat.numMed) {
-        final stock = await _stockActuel(txn, achat.numMed);
-        final nouveauStock = StockRules.apresModificationVente(
-          stockActuel: stock,
-          ancienneQuantite: ancien.nbr,
-          nouvelleQuantite: achat.nbr,
-          designation: nouveauMedic.designMed,
-        );
-        await _ecrireStock(txn, achat.numMed, nouveauStock);
-      } else {
-        final ancienMedic = await _medicParNumero(txn, ancien.numMed);
-        if (ancienMedic != null) {
-          final stockAncien = await _stockActuel(txn, ancien.numMed);
-          await _ecrireStock(txn, ancien.numMed, stockAncien + ancien.nbr);
-        }
-        final stockNouveau = await _stockActuel(txn, achat.numMed);
-        final nouveauStock = StockRules.apresVente(
-          stockActuel: stockNouveau,
-          quantiteVendue: achat.nbr,
-          designation: nouveauMedic.designMed,
-        );
-        await _ecrireStock(txn, achat.numMed, nouveauStock);
+      await _consommerFefo(
+        txn,
+        numMed: achat.numMed,
+        quantite: achat.nbr,
+        reference: 'ACHAT:$id',
+        designation: nouveauMedic.designMed,
+      );
+
+      for (final numMed in <String>{...touches, ancien.numMed, achat.numMed}) {
+        await _recalculerStock(txn, numMed);
       }
 
       return nombreModifie;
@@ -714,16 +1053,15 @@ class DatabaseHelper {
       if (lignes.isEmpty) return 0;
 
       final achat = Achat.fromMap(lignes.first);
+      final touches = await _restaurerReference(txn, 'ACHAT:$id');
       final nombreSupprime = await txn.delete(
         'achats',
         where: 'id = ?',
         whereArgs: <Object?>[id],
       );
 
-      final medic = await _medicParNumero(txn, achat.numMed);
-      if (medic != null) {
-        final stock = await _stockActuel(txn, achat.numMed);
-        await _ecrireStock(txn, achat.numMed, stock + achat.nbr);
+      for (final numMed in <String>{...touches, achat.numMed}) {
+        await _recalculerStock(txn, numMed);
       }
 
       return nombreSupprime;

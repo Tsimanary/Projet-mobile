@@ -5,6 +5,7 @@ import '../core/widgets/confirm_dialog.dart';
 import 'accueil.dart';
 import 'achat.dart';
 import 'entree.dart';
+import 'lots.dart';
 import 'medicament.dart';
 
 /// Conteneur principal : barre de navigation + déconnexion.
@@ -25,6 +26,7 @@ class _HomePageState extends State<HomePage> {
     'Entrées de stock',
     'Médicaments',
     'Ventes',
+    'Lots et péremptions',
   ];
 
   @override
@@ -41,6 +43,8 @@ class _HomePageState extends State<HomePage> {
         return const MedicamentPage();
       case 3:
         return const AchatPage();
+      case 4:
+        return const LotsPage();
       default:
         return const AccueilPage();
     }
@@ -103,6 +107,11 @@ class _HomePageState extends State<HomePage> {
             icon: Icon(Icons.point_of_sale_outlined),
             activeIcon: Icon(Icons.point_of_sale),
             label: 'Ventes',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.event_busy_outlined),
+            activeIcon: Icon(Icons.event_busy),
+            label: 'Lots',
           ),
         ],
       ),
