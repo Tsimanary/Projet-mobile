@@ -38,8 +38,10 @@ class EtatVerrouillage {
 
 /// Code d'accès à l'application (4 à 6 chiffres).
 ///
-/// Le code n'est **jamais** stocké : seule une empreinte salée est conservée
-/// dans la table `parametres` de la base chiffrée. Il protège l'accès à un
+/// Le code n'est **jamais** stocké : seule une empreinte **Argon2id** (sel
+/// aléatoire inclus) est conservée dans la table `parametres` de la base
+/// chiffrée. Les empreintes SHA-256 héritées restent vérifiables et sont
+/// migrées à la volée dès la première saisie correcte. Il protège l'accès à un
 /// téléphone déverrouillé, pas le fichier lui-même (chiffré par la clé
 /// conservée dans le coffre du système).
 class Verrouillage {
@@ -57,8 +59,8 @@ class Verrouillage {
 
   /// Lit l'état courant et purge un blocage expiré.
   static Future<EtatVerrouillage> etat() async {
-    final sel = await _base.lireParametre(_cleSel);
-    final estActif = sel != null && sel.isNotEmpty;
+    final empreinte = await _base.lireParametre(_cleHash);
+    final estActif = empreinte != null && empreinte.isNotEmpty;
 
     final echecs = int.tryParse(await _base.lireParametre(_cleEchecs) ?? '') ?? 0;
     final texteFin = await _base.lireParametre(_cleFinBlocage);
@@ -87,23 +89,38 @@ class Verrouillage {
       );
     }
 
-    final sel = Securite.genererSel();
-    await _base.ecrireParametre(_cleSel, sel);
-    await _base.ecrireParametre(_cleHash, Securite.hasher(pin, sel));
+    final empreinte = await Securite.hacherFort(pin);
+    await _base.ecrireParametre(_cleHash, empreinte);
+    await _base.supprimerParametre(_cleSel);
     await _reinitialiserEchecs();
     actif.value = true;
   }
 
   /// Vérifie un code et gère les tentatives (blocage temporaire).
   static Future<bool> verifier(String pin) async {
-    final sel = await _base.lireParametre(_cleSel);
-    final hash = await _base.lireParametre(_cleHash);
-    if (sel == null || hash == null) return false;
+    final empreinte = await _base.lireParametre(_cleHash);
+    if (empreinte == null || empreinte.isEmpty) return false;
 
     final etatCourant = await etat();
     if (etatCourant.bloque) return false;
 
-    if (Securite.verifier(motDePasse: pin, sel: sel, hashAttendu: hash)) {
+    var valide = false;
+    if (Securite.estEmpreinteArgon2id(empreinte)) {
+      valide = await Securite.verifierFort(secret: pin, empreinte: empreinte);
+    } else {
+      // Empreinte héritée (SHA-256 salé) : vérifiée puis migrée à la volée.
+      final sel = await _base.lireParametre(_cleSel);
+      if (sel != null && sel.isNotEmpty) {
+        valide = Securite.verifier(
+          motDePasse: pin,
+          sel: sel,
+          hashAttendu: empreinte,
+        );
+        if (valide) await _mettreANiveau(pin);
+      }
+    }
+
+    if (valide) {
       await _reinitialiserEchecs();
       return true;
     }
@@ -130,6 +147,13 @@ class Verrouillage {
     await _base.supprimerParametre(_cleHash);
     await _reinitialiserEchecs();
     actif.value = false;
+  }
+
+  /// Réécrit l'empreinte du code en Argon2id (migration transparente).
+  static Future<void> _mettreANiveau(String pin) async {
+    final empreinte = await Securite.hacherFort(pin);
+    await _base.ecrireParametre(_cleHash, empreinte);
+    await _base.supprimerParametre(_cleSel);
   }
 
   static Future<void> _reinitialiserEchecs() async {

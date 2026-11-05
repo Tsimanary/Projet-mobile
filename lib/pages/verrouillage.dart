@@ -155,9 +155,11 @@ class _EcranVerrouillageState extends State<EcranVerrouillage> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  _bloque
-                      ? 'Application bloquée temporairement'
-                      : 'Saisissez votre code pour continuer',
+                  _verification
+                      ? 'Vérification…'
+                      : _bloque
+                          ? 'Application bloquée temporairement'
+                          : 'Saisissez votre code pour continuer',
                   textAlign: TextAlign.center,
                   style: const TextStyle(color: AppColors.gris),
                 ),
@@ -176,11 +178,19 @@ class _EcranVerrouillageState extends State<EcranVerrouillage> {
                 SizedBox(
                   height: 46,
                   child: Center(
-                    child: Text(
-                      _erreur ?? '',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: AppColors.rouge),
-                    ),
+                    child: _verification
+                        // Argon2id prend quelques centaines de millisecondes :
+                        // on l'annonce plutôt que de laisser un écran figé.
+                        ? const SizedBox(
+                            height: 22,
+                            width: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Text(
+                            _erreur ?? '',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: AppColors.rouge),
+                          ),
                   ),
                 ),
                 _pave(),

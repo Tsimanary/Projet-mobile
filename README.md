@@ -50,9 +50,12 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
     l'appareil et conservée par le Keystore du système ; un fichier `.db`
     copié est inutilisable sans elle. Les bases existantes sont converties
     automatiquement, sans perte.
-12. **Un code d'accès** protège l'application : empreinte salée (jamais le
-    code), 5 essais avant un blocage de 5 minutes, reverrouillage après 30 s
+12. **Un code d'accès** protège l'application : empreinte **Argon2id** (jamais
+    le code), 5 essais avant un blocage de 5 minutes, reverrouillage après 30 s
     en arrière-plan.
+13. **Les secrets sont dérivés en Argon2id** (format PHC autoportant). Les
+    empreintes SHA-256 héritées restent vérifiables et sont réécrites à la
+    volée à la première saisie correcte.
 
 Ces règles sont couvertes par des tests (`test/`).
 
@@ -153,7 +156,9 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
   jamais écrite dans un fichier de l'application.
 - **Code d'accès** 4–6 chiffres : empreinte salée, blocage temporaire après 5
   essais, reverrouillage après 30 s d'inactivité en arrière-plan.
-- Mots de passe hachés avec sel aléatoire (migration transparente).
+- **Mots de passe et code d'accès hachés en Argon2id** (19 Mio, 2 passes, sel
+  aléatoire) — coût mémoire et temps à chaque tentative, empreintes héritées
+  migrées automatiquement.
 - Sauvegarde Android désactivée (`android:allowBackup="false"`).
 - Requêtes SQL entièrement paramétrées.
 - Modèle de menace complet et limites : [`docs/SECURITE.md`](docs/SECURITE.md).
@@ -161,8 +166,8 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
   internet, ni au stockage, ni à la localisation. Les données ne sortent du
   téléphone que par l'export de sauvegarde, déclenché par l'utilisateur.
 
-**Avant une mise en production** : Argon2id, chiffrement de la base
-(`sqflite_sqlcipher`), rôles utilisateurs, verrouillage biométrique.
+**Avant une mise en production** : chiffrement du fichier de sauvegarde, rôles
+utilisateurs, verrouillage biométrique.
 
 ---
 
@@ -177,7 +182,6 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
   les builds sont signés avec les clés de debug.
 - Le **fichier de sauvegarde JSON n'est pas chiffré** (il doit rester
   restaurable sur un autre appareil) : à conserver en lieu sûr.
-- Empreintes SHA-256 (code et mots de passe) : passage à Argon2id prévu.
 - Pas de rôles (tout compte peut tout faire) ni de biométrie.
 
 Voir `docs/AUDIT_PROJET.md` (analyse initiale) et `docs/CORRECTIONS.md`

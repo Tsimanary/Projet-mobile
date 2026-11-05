@@ -28,7 +28,8 @@ import '../core/stock_rules.dart';
 ///  * chaque mouvement est historisé dans `mouvements_stock` : une vente ou
 ///    une entrée peuvent donc être annulées sans dérive ;
 ///  * les dates sont stockées en `AAAA-MM-JJ` ;
-///  * les mots de passe sont hachés (avec migration des comptes existants) ;
+///  * les mots de passe et le code d'accès sont hachés en **Argon2id**
+///    (empreintes SHA-256 héritées migrées à la volée) ;
 ///  * un médicament possédant un historique ne peut pas être supprimé ;
 ///  * le fichier de base est **chiffré** (SQLCipher), avec une clé conservée
 ///    dans le coffre du système (Keystore) et une conversion automatique des
@@ -613,26 +614,48 @@ class DatabaseHelper {
     final sel = ligne['usrSalt'] as String?;
     final motDePasseStocke = (ligne['usrPassword'] ?? '').toString();
 
-    // Compte créé avant le hachage : comparaison en clair puis migration.
+    // 1. Format courant : Argon2id (empreinte autoportante).
+    if (Securite.estEmpreinteArgon2id(motDePasseStocke)) {
+      return Securite.verifierFort(
+        secret: user.usrPassword,
+        empreinte: motDePasseStocke,
+      );
+    }
+
+    // 2. Compte créé avant tout hachage : mot de passe en clair.
     if (sel == null || sel.isEmpty) {
       if (motDePasseStocke != user.usrPassword) return false;
-      final nouveauSel = Securite.genererSel();
-      await db.update(
-        'users',
-        <String, Object?>{
-          'usrPassword': Securite.hasher(user.usrPassword, nouveauSel),
-          'usrSalt': nouveauSel,
-        },
-        where: 'usrName = ?',
-        whereArgs: <Object?>[nom],
-      );
+      await _reecrireMotDePasse(db, nom, user.usrPassword);
       return true;
     }
 
-    return Securite.verifier(
+    // 3. Ancien SHA-256 salé : vérification puis migration à la volée.
+    final valide = Securite.verifier(
       motDePasse: user.usrPassword,
       sel: sel,
       hashAttendu: motDePasseStocke,
+    );
+    if (valide) {
+      await _reecrireMotDePasse(db, nom, user.usrPassword);
+    }
+    return valide;
+  }
+
+  /// Réécrit un mot de passe au format Argon2id (migration transparente).
+  ///
+  /// Appelée après une connexion réussie sur un ancien format : l'utilisateur
+  /// ne s'aperçoit de rien, mais l'empreinte stockée devient coûteuse à casser.
+  Future<void> _reecrireMotDePasse(
+    DatabaseExecutor executeur,
+    String nom,
+    String motDePasse,
+  ) async {
+    final empreinte = await Securite.hacherFort(motDePasse);
+    await executeur.update(
+      'users',
+      <String, Object?>{'usrPassword': empreinte, 'usrSalt': null},
+      where: 'usrName = ?',
+      whereArgs: <Object?>[nom],
     );
   }
 
@@ -654,12 +677,12 @@ class DatabaseHelper {
       throw UtilisateurDejaExisteException(nom);
     }
 
-    final sel = Securite.genererSel();
+    // Argon2id dès la création : aucune empreinte faible ne sera jamais écrite.
+    final empreinte = await Securite.hacherFort(user.usrPassword);
     try {
       return await db.insert('users', <String, Object?>{
         'usrName': nom,
-        'usrPassword': Securite.hasher(user.usrPassword, sel),
-        'usrSalt': sel,
+        'usrPassword': empreinte,
       });
     } on DatabaseException {
       throw UtilisateurDejaExisteException(nom);

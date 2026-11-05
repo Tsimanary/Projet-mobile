@@ -411,3 +411,58 @@ chiffrement. L'avertissement est affiché dans les écrans **Sécurité** et
 du code, seuil de blocage, calcul de la fin de blocage, temps restant, formats
 de durée, empreinte (bon code / mauvais code / sel unique / pas de code en
 clair). Total du projet : **47 tests**.
+
+---
+
+## 12. Itération 7 — Argon2id pour les mots de passe et le code d'accès
+
+### 12.1 Le problème
+
+SHA-256 salé protège contre la lecture directe, mais c'est une fonction
+**rapide** : sur une empreinte extraite (sauvegarde JSON, téléphone rooté), un
+attaquant teste des milliards de candidats par seconde. Le sel empêche les
+tables précalculées, il n'empêche pas la force brute. Pour un mot de passe
+d'utilisateur, c'est le mauvais outil.
+
+### 12.2 Ce qui a été fait
+
+| Élément | Choix |
+|---|---|
+| Algorithme | **Argon2id** (`cryptography`), recommandation OWASP |
+| Paramètres | mémoire **19 456 kio** (19 Mio), **2** passes, **1** fil, empreinte 32 octets, sel 16 octets |
+| Format de stockage | **PHC autoportant** : `$argon2id$v=19$m=…,t=…,p=…$sel$empreinte` |
+| Comparaison | en temps constant (pas de fuite par le temps de réponse) |
+| Analyse défensive | toute empreinte illisible est refusée, jamais d'exception remontée à l'UI |
+| Coût perçu | indicateur « Vérification… » sur l'écran de verrouillage, bouton désactivé à la connexion |
+
+**Pourquoi le format PHC** : les paramètres voyagent avec l'empreinte. Durcir
+les réglages plus tard ne casse rien — chaque empreinte est vérifiée avec les
+paramètres qui ont servi à la produire. Et un attaquant ne peut pas les réduire :
+la vérification recalculerait une empreinte différente.
+
+### 12.3 Migration transparente
+
+Trois formats peuvent coexister dans une base existante :
+
+1. **Argon2id** (nouveau) → vérifié directement ;
+2. **SHA-256 salé** (itération 3) → vérifié avec l'ancien algorithme, puis
+   **réécrit en Argon2id** si le secret est correct (`login`,
+   `Verrouillage._mettreANiveau`) ;
+3. **mot de passe en clair** (comptes d'origine) → comparé, puis réécrit.
+
+Aucune action utilisateur, aucune donnée perdue, et plus aucune empreinte faible
+ne survit à une connexion réussie.
+
+### 12.4 Tests
+
+8 tests supplémentaires (`test/empreinte_test.dart`) : aller-retour du format
+PHC, sept formes d'empreintes invalides, comparaison en temps constant, secret
+correct/incorrect, unicité des sels, empreinte abîmée sans exception, et
+compatibilité de l'ancien format. Total du projet : **55 tests**.
+
+### 12.5 Réserve honnête
+
+Les paramètres Argon2id n'ont pas pu être **chronométrés sur un téléphone
+réel** dans cet environnement. Recommandation : mesurer la vérification sur
+l'appareil cible ; au-delà de ~1,5 s, réduire à `m=12 Mio, t=2` (toujours dans
+les recommandations OWASP) — le format PHC rend ce réglage indolore.

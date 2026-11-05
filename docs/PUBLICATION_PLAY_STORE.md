@@ -14,7 +14,7 @@ clé de signature (que personne d'autre que vous ne doit détenir).
 | `namespace` Android | `com.tsimanary.appharmacie` |
 | Nom affiché | **AppHarmacie** |
 | Icône | `android/app/src/main/res/mipmap-*/ic_launcher.png` (48 → 192 px) |
-| Version | `pubspec.yaml` → `version: 1.3.0+3` (`1.3.0` = nom, `3` = versionCode) |
+| Version | `pubspec.yaml` → `version: 1.4.0+4` (`1.4.0` = nom, `4` = versionCode) |
 | AGP / Gradle / Kotlin / JDK | 8.3.2 / 8.4 / 1.9.22 / 17 |
 | Signature release | lue dans `android/key.properties` s'il existe, sinon clés de debug |
 | Permissions demandées | **aucune** (pas d'internet, pas de stockage, pas de localisation) |
@@ -137,7 +137,7 @@ C'est cette URL qu'il faut saisir dans la Play Console.
 
 ## 7. Mises à jour
 
-1. Incrémenter la version dans `pubspec.yaml` : `version: 1.4.0+4`
+1. Incrémenter la version dans `pubspec.yaml` : `version: 1.5.0+5`
    (le nombre après `+` **doit** augmenter à chaque envoi).
 2. `flutter build appbundle --release`
 3. Play Console → Piste de production → **Créer une release** → téléverser

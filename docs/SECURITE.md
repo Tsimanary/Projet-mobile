@@ -106,7 +106,9 @@ absence.
 | Durée du blocage | 5 minutes | `ReglesPin.dureeBlocage` |
 | Compteur | persisté en base (redémarrer l'app ne remet pas à zéro) | table `parametres` |
 | Reverrouillage | après 30 s en arrière-plan | `GardienSession.delaiReactivation` |
-| Empreinte | SHA-256 salé (sel aléatoire par code) | `Securite` |
+| Empreinte | **Argon2id** (19 Mio, 2 passes, 1 fil, sel de 16 octets) | `Securite.hacherFort` |
+| Format | PHC autoportant `$argon2id$v=19$m=…,t=…,p=…$sel$empreinte` | `EmpreinteArgon2id` |
+| Migration | empreintes SHA-256 héritées vérifiées puis réécrites à la volée | `Verrouillage._mettreANiveau` |
 
 **Oubli du code** : il n'existe aucune récupération (par conception — un
 « bouton magique » serait une porte dérobée). La sortie de secours est la
@@ -115,14 +117,60 @@ supplémentaire d'exporter régulièrement.
 
 ---
 
-## 7. Limites connues et travaux restants
+## 7. Dérivation des secrets : Argon2id
 
-1. **SHA-256 salé** pour le code et les mots de passe : rapide, donc vulnérable
-   hors ligne. Cible : **Argon2id** (paquet `cryptography`), avec migration
-   transparente des empreintes existantes.
-2. **Sauvegarde non chiffrée** (§ 5).
-3. **Pas de verrouillage biométrique** (`local_auth`) : confort, pas sécurité.
-4. **Rôles** : aujourd'hui tout compte peut tout faire, y compris supprimer
+### 7.1 Pourquoi
+
+SHA-256 salé est **rapide** : c'est exactement ce qu'il ne faut pas pour un mot
+de passe. Un attaquant qui obtient une empreinte (sauvegarde JSON, téléphone
+rooté) peut tester des milliards de candidats par seconde sur GPU. Argon2id
+impose au contraire **du temps et de la mémoire** à chaque tentative, ce qui
+rend l'attaque par dictionnaire hors ligne coûteuse.
+
+### 7.2 Paramètres retenus
+
+| Paramètre | Valeur | Justification |
+|---|---|---|
+| Mémoire | 19 456 kio (19 Mio) | minimum OWASP pour Argon2id |
+| Passes | 2 | idem |
+| Fils | 1 | téléphones d'entrée de gamme |
+| Sel | 16 octets aléatoires, par secret | empêche les tables précalculées |
+| Empreinte | 32 octets | marge suffisante |
+
+Ces paramètres sont **écrits dans l'empreinte** (format PHC). Les durcir plus
+tard — sur du matériel plus récent — n'invalide donc aucune empreinte
+existante : chacune est vérifiée avec ses propres paramètres, et les secrets
+migrent au format courant à la prochaine saisie correcte.
+
+### 7.3 Coût perçu
+
+Une vérification demande typiquement quelques centaines de millisecondes. Ce
+délai est **visible** : l'écran de verrouillage affiche « Vérification… » avec
+un indicateur de progression, et l'écran de connexion désactive son bouton. Ce
+n'est pas une lenteur accidentelle, c'est le prix de la résistance hors ligne.
+
+### 7.4 Migration (transparente, sans mot de passe perdu)
+
+| Situation | Comportement |
+|---|---|
+| Mot de passe / code déjà en Argon2id | vérifié directement |
+| Ancien SHA-256 salé | vérifié avec l'ancien algorithme, puis **réécrit en Argon2id** si correct |
+| Mot de passe encore en clair (comptes d'origine) | comparé, puis réécrit en Argon2id |
+
+Aucune action n'est demandée à l'utilisateur, et aucune empreinte faible ne
+survit à une connexion réussie.
+
+---
+
+## 8. Limites connues et travaux restants
+
+1. **Sauvegarde non chiffrée** (§ 5) — la prochaine marche : Argon2id (déjà là)
+   + AES-GCM avec phrase secrète.
+2. **Pas de verrouillage biométrique** (`local_auth`) : confort, pas sécurité.
+3. **Rôles** : aujourd'hui tout compte peut tout faire, y compris supprimer
    une vente. Un rôle « vendeur » limité reste à définir.
-5. **Écran de code sans anti-capture** : une capture d'écran reste possible
+4. **Écran de code sans anti-capture** : une capture d'écran reste possible
    sur les écrans de données (`FLAG_SECURE` non activé).
+5. **Paramètres Argon2id non mesurés sur matériel réel** : à chronométrer sur
+   le téléphone cible ; si la vérification dépasse ~1,5 s, descendre à
+   `m=12 Mio, t=2` (toujours dans les recommandations OWASP).
