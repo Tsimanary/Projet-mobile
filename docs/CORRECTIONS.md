@@ -816,3 +816,69 @@ version `1.9.0+9`.
 
 - **Mesure du coût Argon2id** sur le téléphone cible : une mesure, un réglage.
 - Traçabilité des **consultations** et des changements de compte.
+
+---
+
+## 18. Itération 13 — première compilation réelle : deux erreurs révélées
+
+### 18.1 Ce qui s'est passé
+
+Le projet vient d'être rejoué sur un poste neuf (Flutter 3.47.9 / Dart 3.13).
+`flutter test` a alors révélé **deux erreurs de compilation** que rien
+n'avait détectées auparavant — parce que **la CI n'a jamais tourné** : elle
+échouait dès `flutter pub get`, la version de Flutter épinglée (3.22.0,
+Dart 3.4.0) étant inférieure au plancher du `pubspec.yaml`
+(`sdk: '>=3.4.3'`). Pendant dix itérations, « analyse et tests » n'a donc
+jamais été exécuté, ni sur GitHub ni ailleurs : aucun SDK n'était disponible
+dans l'environnement de développement.
+
+C'est la démonstration par l'exemple qu'un test qui ne tourne pas ne prouve
+rien, et que la revue statique (équilibre des accolades, existence des
+imports) ne remplace pas un compilateur.
+
+### 18.2 Erreur 1 — `sauvegarde.dart` : `_compteurs` déclaré deux fois
+
+```text
+lib/pages/sauvegarde.dart:288:10: Error: '_compteurs' is already declared in this scope.
+lib/pages/sauvegarde.dart:28:20: Context: Previous declaration of '_compteurs'.
+```
+
+Un champ `Map<String, int> _compteurs` et une méthode `Widget _compteurs()`
+cohabitaient dans la même classe depuis l'itération 8. Dart refuse.
+
+**Correction** : la méthode devient `_carteCompteurs()` (nom qui dit ce qu'elle
+rend), appel compris.
+
+### 18.3 Erreur 2 — `utilisateurs.dart` : `AppTextField` au lieu de `ChampTexte`
+
+```text
+lib/pages/utilisateurs.dart:309:17: Error: The method 'AppTextField' isn't defined...
+```
+
+Le widget de saisie du projet s'appelle `ChampTexte` (fichier
+`core/widgets/app_text_field.dart` — le nom du fichier m'avait induit en
+erreur à l'itération 9). Trois occurrences dans l'écran Utilisateurs.
+
+**Correction** : `AppTextField(` → `ChampTexte(`. Les paramètres utilisés
+(`controleur`, `label`, `icone`, `obscur`, `suffixe`, `validateur`,
+`textCapitalization`) existent bien.
+
+### 18.4 Correction de la cause racine
+
+`.github/workflows/flutter.yml` épingle désormais **`flutter-version: '3.47.9'`**
+(la version qui a servi aux tests de référence), avec un commentaire
+expliquant le piège : la version de la CI doit rester **supérieure ou égale**
+au plancher `sdk` du `pubspec.yaml`, sinon `pub get` échoue et **rien** n'est
+vérifié.
+
+Docs alignées : README (« Flutter ≥ 3.24, testé en 3.47.9 »),
+`docs/PUBLICATION_PLAY_STORE.md` (prérequis machine).
+
+### 18.5 Leçon retenue
+
+1. Un `sdk` dans `pubspec.yaml` et une version dans la CI sont **un seul
+   réglage déguisé en deux** : les désynchroniser désarme la CI.
+2. La validation « statique » faite sans SDK ne voit ni les noms de classes
+   faux ni les conflits de champ/méthode. Elle rassure à tort.
+3. La première exécution réelle (`flutter test`) reste l'arbitre — ici elle a
+   trouvé deux erreurs en moins d'une minute.

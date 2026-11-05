@@ -238,7 +238,7 @@ class _SauvegardePageState extends State<SauvegardePage> {
                   'devenir incohérent.',
             ),
             const SizedBox(height: 12),
-            _compteurs(),
+            _carteCompteurs(),
             const SizedBox(height: 12),
             FilledButton.icon(
               onPressed: _exporter,
@@ -285,7 +285,7 @@ class _SauvegardePageState extends State<SauvegardePage> {
     );
   }
 
-  Widget _compteurs() {
+  Widget _carteCompteurs() {
     final lignes = <({String libelle, int valeur})>[
       (libelle: 'Médicaments', valeur: _compteurs['medics'] ?? 0),
       (libelle: 'Lots', valeur: _compteurs['lots'] ?? 0),
