@@ -247,13 +247,14 @@ class _SecuritePageState extends State<SecuritePage> {
             ),
             const SizedBox(height: 12),
             _carte(
-              titre: 'Sauvegarde : attention',
-              icone: Icons.warning_amber_outlined,
-              couleur: AppColors.orange,
+              titre: 'Sauvegarde chiffrée',
+              icone: Icons.enhanced_encryption_outlined,
+              couleur: AppColors.vert,
               texte:
-                  'Le fichier de sauvegarde exporté est un JSON en clair : il '
-                  'n\'est pas chiffré. Conservez-le dans un emplacement '
-                  'protégé et ne le partagez pas.',
+                  'Les sauvegardes sont chiffrées par une phrase secrète '
+                  '(AES-256-GCM, clé dérivée en Argon2id). Un export « sans '
+                  'protection » reste possible, mais il est alors lisible en '
+                  'clair : à éviter.',
             ),
             const SizedBox(height: 12),
             _carte(

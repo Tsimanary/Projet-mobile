@@ -39,7 +39,7 @@ class Securite {
     ParametresArgon2id parametres = ParametresArgon2id.recommande,
   }) async {
     final sel = selAleatoire(longueurOctets: longueurSel);
-    final empreinte = await _deriver(
+    final empreinte = await deriverCle(
       secret: secret,
       sel: sel,
       parametres: parametres,
@@ -65,7 +65,7 @@ class Securite {
     final analysee = EmpreinteArgon2id.analyser(empreinte);
     if (analysee == null) return false;
 
-    final calculee = await _deriver(
+    final calculee = await deriverCle(
       secret: secret,
       sel: analysee.sel,
       parametres: ParametresArgon2id(
@@ -79,7 +79,12 @@ class Securite {
     return egalEnTempsConstant(calculee, analysee.empreinte);
   }
 
-  static Future<List<int>> _deriver({
+  /// Dérive [longueur] octets de clé à partir d'un secret et d'un sel.
+  ///
+  /// Utilisée pour les empreintes Argon2id **et** pour la clé AES-256 du
+  /// fichier de sauvegarde : un seul chemin de dérivation, donc un seul endroit
+  /// à auditer.
+  static Future<List<int>> deriverCle({
     required String secret,
     required List<int> sel,
     required ParametresArgon2id parametres,

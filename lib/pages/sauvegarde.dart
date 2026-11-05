@@ -3,16 +3,18 @@ import 'package:flutter/material.dart';
 import '../Authentification/login.dart';
 import '../core/backup.dart';
 import '../core/backup_format.dart';
+import '../core/chiffrement.dart';
 import '../core/exceptions.dart';
 import '../core/feedback.dart';
 import '../core/theme.dart';
 import '../core/widgets/confirm_dialog.dart';
+import '../core/widgets/dialogue_phrase.dart';
 
 /// Écran de sauvegarde et de restauration.
 ///
-/// Un seul fichier JSON contient **toutes** les données (comptes, catalogue,
-/// lots, mouvements, entrées, ventes) : c'est aussi la base d'une migration
-/// vers un nouveau téléphone.
+/// Un seul fichier contient **toutes** les données (comptes, catalogue, lots,
+/// mouvements, entrées, ventes). Il est chiffré par une phrase secrète, ce qui
+/// permet de le transporter ou de l'archiver sans exposer l'officine.
 class SauvegardePage extends StatefulWidget {
   const SauvegardePage({super.key});
 
@@ -36,20 +38,56 @@ class _SauvegardePageState extends State<SauvegardePage> {
       if (!mounted) return;
       setState(() => _compteurs = compteurs);
     } catch (_) {
-      // L'affichage des compteurs est accessoire : on n'interrompt pas l'écran.
+      // Les compteurs sont un confort d'affichage : on n'interrompt rien.
     }
   }
 
   Future<void> _exporter() async {
+    final resultat = await showDialog<ResultatPhrase>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => DialoguePhrase(
+        titre: 'Protéger la sauvegarde',
+        message:
+            'Ce fichier contient toutes vos données. Choisissez une phrase '
+            'secrète : elle sera demandée pour restaurer, et elle est le seul '
+            'moyen d\'ouvrir le fichier.\n\n'
+            'Si vous l\'oubliez, la sauvegarde est définitivement perdue.',
+        confirmation: true,
+        longueurMin: ChiffrementSauvegarde.longueurMinPhrase,
+        libelleValider: 'Chiffrer et partager',
+        boutonSansProtection: 'Exporter sans protection',
+      ),
+    );
+
+    if (resultat == null || !mounted) return;
+
+    if (resultat.sansProtection) {
+      final confirme = await confirmerAction(
+        context,
+        titre: 'Exporter sans protection',
+        message:
+            'Le fichier ne sera pas chiffré : quiconque l\'obtient pourra lire '
+            'l\'intégralité des données (catalogue, lots, ventes, comptes).\n\n'
+            'À réserver à un transfert immédiat vers un emplacement sûr.',
+        libelleConfirmer: 'Exporter en clair',
+      );
+      if (!confirme || !mounted) return;
+    }
+
     setState(() => _occupe = true);
     try {
-      final fichier = await Sauvegarde.ecrireFichier();
-      await Sauvegarde.partager(fichier);
+      final fichier = await Sauvegarde.ecrireFichier(
+        phraseSecrete: resultat.phrase,
+      );
+      await Sauvegarde.partager(fichier, chiffree: resultat.phrase != null);
+
       if (!mounted) return;
       afficherMessage(
         context,
-        'Sauvegarde créée :'
-        ' ${(fichier.lengthSync() / 1024).toStringAsFixed(1)} Ko.',
+        resultat.phrase != null
+            ? 'Sauvegarde chiffrée créée.'
+            : 'Sauvegarde créée, non chiffrée.',
       );
     } on Exception catch (erreur) {
       if (!mounted) return;
@@ -62,7 +100,12 @@ class _SauvegardePageState extends State<SauvegardePage> {
   Future<void> _restaurer() async {
     setState(() => _occupe = true);
     try {
-      final tables = await Sauvegarde.choisirEtAnalyser();
+      final fichier = await Sauvegarde.choisir();
+      if (fichier == null || !mounted) return;
+
+      final tables = fichier.estChiffre
+          ? await _demanderPhraseEtAnalyser(fichier)
+          : await Sauvegarde.analyser(fichier);
       if (tables == null || !mounted) return;
 
       final confirme = await confirmerAction(
@@ -116,6 +159,37 @@ class _SauvegardePageState extends State<SauvegardePage> {
     }
   }
 
+  /// Demande la phrase secrète (3 essais) et renvoie les tables déchiffrées.
+  Future<Map<String, Object?>?> _demanderPhraseEtAnalyser(
+    FichierSauvegarde fichier,
+  ) async {
+    for (var essai = 1; essai <= 3; essai++) {
+      final resultat = await showDialog<ResultatPhrase>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => DialoguePhrase(
+          titre: 'Sauvegarde chiffrée',
+          message:
+              'Saisissez la phrase secrète utilisée lors de l\'export '
+              '(essai $essai sur 3).',
+          longueurMin: ChiffrementSauvegarde.longueurMinPhrase,
+          libelleValider: 'Déchiffrer',
+        ),
+      );
+
+      final phrase = resultat?.phrase;
+      if (phrase == null || !mounted) return null;
+
+      try {
+        return await Sauvegarde.analyser(fichier, phrase: phrase);
+      } on OperationRefuseeException catch (erreur) {
+        if (!mounted) return null;
+        afficherMessage(context, erreur.toString(), erreur: true);
+      }
+    }
+    return null;
+  }
+
   String _resumeCompteurs() {
     final medicaments = _compteurs['medics'] ?? 0;
     final lots = _compteurs['lots'] ?? 0;
@@ -140,16 +214,16 @@ class _SauvegardePageState extends State<SauvegardePage> {
               couleur: AppColors.bleu,
               texte:
                   'Comptes utilisateurs, catalogue, lots et péremptions, '
-                  'mouvements de stock, entrées, ventes. '
-                  'Le stock est recalculé à partir des lots lors de la '
-                  'restauration : il ne peut pas devenir incohérent.',
+                  'mouvements de stock, entrées, ventes. Le stock est recalculé '
+                  'à partir des lots lors de la restauration : il ne peut pas '
+                  'devenir incohérent.',
             ),
             const SizedBox(height: 12),
             _compteurs(),
             const SizedBox(height: 12),
             FilledButton.icon(
               onPressed: _exporter,
-              icon: const Icon(Icons.save_alt),
+              icon: const Icon(Icons.lock_outline),
               label: const Text('Créer et partager une sauvegarde'),
               style: FilledButton.styleFrom(
                 minimumSize: const Size.fromHeight(48),
@@ -166,14 +240,25 @@ class _SauvegardePageState extends State<SauvegardePage> {
             ),
             const SizedBox(height: 16),
             _carte(
+              titre: 'Chiffrement par phrase secrète',
+              icone: Icons.enhanced_encryption_outlined,
+              couleur: AppColors.vert,
+              texte:
+                  'Le fichier est chiffré en AES-256-GCM ; la clé est dérivée '
+                  'de votre phrase par Argon2id et n\'est jamais enregistrée. '
+                  'Sans la phrase, le fichier est inutilisable — même pour '
+                  'nous : il n\'existe aucune récupération.',
+            ),
+            const SizedBox(height: 12),
+            _carte(
               titre: 'Bonnes pratiques',
               icone: Icons.info_outline,
               couleur: AppColors.orange,
               texte:
                   'Faites une sauvegarde après chaque journée de travail et '
-                  'avant toute mise à jour. Conservez-la hors du téléphone '
-                  '(courriel, Drive) : elle contient des données de santé, '
-                  'à protéger.',
+                  'avant toute mise à jour. Conservez le fichier hors du '
+                  'téléphone (courriel, Drive) et notez la phrase secrète '
+                  '*séparément* : les deux ensemble doivent être protégés.',
             ),
           ],
         ),

@@ -6,16 +6,18 @@ production et à chaque évolution sensible.
 
 ---
 
-## 1. Deux verrous, deux rôles
+## 1. Trois verrous, trois rôles
 
 | Verrou | Ce qu'il protège | Où vit le secret |
 |---|---|---|
 | **Chiffrement de la base** (SQLCipher) | le fichier `.db` au repos : vol du téléphone, copie du fichier, extraction par sauvegarde, ADB, outil de récupération | clé de 32 octets aléatoires, dans le **Keystore** Android via `flutter_secure_storage` |
-| **Code d'accès** (4 à 6 chiffres) | l'accès à l'application sur un téléphone **déjà déverrouillé** | empreinte salée SHA-256 dans la table `parametres` de la base chiffrée |
+| **Code d'accès** (4 à 6 chiffres) | l'accès à l'application sur un téléphone **déjà déverrouillé** | empreinte **Argon2id** dans la table `parametres` de la base chiffrée |
+| **Phrase secrète de sauvegarde** | le fichier exporté, qui circule hors du téléphone (courriel, clé USB, Drive) | nulle part : la clé AES-256 est redérivée en Argon2id à chaque ouverture |
 
-Ils sont indépendants : le code d'accès n'est pas la clé de chiffrement. C'est
-volontaire — un code à 4 chiffres (10 000 combinaisons) est un verrou
-d'usage, pas un secret cryptographique.
+Ils sont indépendants : le code d'accès n'est pas la clé de chiffrement de la
+base, et la phrase de sauvegarde n'est pas le code d'accès. C'est volontaire —
+un code à 4 chiffres (10 000 combinaisons) est un verrou d'usage, pas un secret
+cryptographique ; une phrase longue, elle, peut l'être.
 
 ---
 
@@ -52,7 +54,9 @@ Application  ──►  SQLCipher  ◄──  Clé 32 octets (Keystore Android)
 | Analyse du trafic réseau | Sans objet | aucune permission internet, aucun serveur |
 | Téléphone rooté, application ouverte | **Non** | la mémoire du processus est lisible |
 | Code d'accès deviné par force brute | **Partiellement** | 5 essais puis blocage 5 min, compteur persistant ; un code à 6 chiffres est recommandé |
-| Fichier de **sauvegarde** exporté | **Non** | JSON en clair — voir § 5 |
+| Fichier de **sauvegarde** exporté (courriel, Drive, clé USB) | **Oui, si la phrase secrète est utilisée** | AES-256-GCM, clé dérivée en Argon2id — voir § 5 |
+| Sauvegarde exportée **sans protection** (choix explicite) | **Non** | JSON en clair, précédé d'un avertissement |
+| Phrase secrète oubliée | — | sauvegarde perdue : aucune récupération possible (par conception) |
 
 ---
 
@@ -76,24 +80,71 @@ conversion répétée.
 
 ---
 
-## 5. Le point faible assumé : le fichier de sauvegarde
+## 5. Le fichier de sauvegarde : chiffré par phrase secrète
 
-L'export produit un **JSON lisible** (c'est ce qui le rend restaurable sur un
-autre appareil et inspectable en cas d'incident). Il contient les données de
-gestion : catalogue, lots, mouvements, entrées, ventes, comptes (mots de passe
-hachés).
+L'export produit un fichier **chiffré** (sauf si l'utilisateur demande
+explicitement le contraire, avec un avertissement).
 
-Conséquences, affichées dans l'écran **Sécurité** et **Sauvegarde** :
+### 5.1 Chaîne de protection
 
-- ne le stockez pas dans un dossier partagé ou une messagerie ouverte ;
-- un export envoyé par courriel est un export potentiellement exposé ;
-- il n'est **pas** chiffré par la clé de l'appareil (elle ne quitterait pas le
-  téléphone, et le fichier doit rester restaurable ailleurs).
+```
+Phrase secrète (jamais stockée)
+        │
+        ▼
+   Argon2id (19 Mio, 2 passes, sel aléatoire de 16 octets)
+        │
+        ▼
+   Clé AES-256  ──►  AES-256-GCM (nonce aléatoire de 12 octets)
+                          │
+                          ▼
+        Enveloppe JSON : kdf + nonce + données + tag
+```
 
-**Prochaine étape prévue** : chiffrement du fichier de sauvegarde par phrase
-secrète (Argon2id + AES-GCM via le paquet `cryptography`). Non implémenté ici
-volontairement : une cryptographie faite à la main est plus dangereuse que son
-absence.
+- **Aucune clé n'est enregistrée** : elle est redérivée à chaque ouverture. Il
+  n'existe donc pas de « clé de secours » à voler.
+- **GCM authentifie** le contenu : une seule modification, même d'un octet, fait
+  échouer le déchiffrement (pas de corruption silencieuse).
+- **Sel et nonce sont neufs à chaque export** : deux sauvegardes du même
+  contenu n'ont rien en commun, et un fichier ne peut pas révéler qu'un autre
+  contient les mêmes données.
+
+### 5.2 Enveloppe (auto-descriptive)
+
+```json
+{
+  "application": "appharmacie",
+  "type": "sauvegarde-chiffree",
+  "format": 1,
+  "kdf": { "algorithme": "argon2id", "memoire": 19456,
+           "iterations": 2, "parallelisme": 1, "sel": "…" },
+  "chiffrement": { "algorithme": "AES-256-GCM",
+                   "nonce": "…", "donnees": "…", "tag": "…" }
+}
+```
+
+Les paramètres voyagent avec le fichier : une sauvegarde faite avec des
+paramètres plus faibles (ou plus forts) reste lisible, et la vérification
+n'impose jamais de faire confiance à des réglages non lus.
+
+### 5.3 Ce qui est refusé
+
+- Phrase absente → « Cette sauvegarde est chiffrée : saisissez sa phrase
+  secrète. »
+- Phrase fausse **ou** fichier altéré → même message (« Phrase secrète
+  incorrecte, ou fichier altéré ») : ne rien apprendre à un attaquant.
+- Enveloppe d'une version de format plus récente → refus explicite (mettre à
+  jour l'application).
+- Sauvegarde en clair passée à la fonction de déchiffrement → refus explicite.
+
+### 5.4 Le risque résiduel, énoncé sans détour
+
+**Perdre la phrase = perdre la sauvegarde.** Il n'existe aucune récupération,
+et c'est la contrepartie du chiffrement. L'interface l'affiche avant l'export et
+rappelle que la phrase doit être conservée *séparément* du fichier.
+
+Un export **sans protection** reste possible pour un transfert immédiat vers un
+emplacement sûr, mais il est précédé d'un avertissement explicite : le fichier
+est alors lisible par quiconque l'obtient.
 
 ---
 
@@ -164,13 +215,13 @@ survit à une connexion réussie.
 
 ## 8. Limites connues et travaux restants
 
-1. **Sauvegarde non chiffrée** (§ 5) — la prochaine marche : Argon2id (déjà là)
-   + AES-GCM avec phrase secrète.
-2. **Pas de verrouillage biométrique** (`local_auth`) : confort, pas sécurité.
-3. **Rôles** : aujourd'hui tout compte peut tout faire, y compris supprimer
+1. **Pas de verrouillage biométrique** (`local_auth`) : confort, pas sécurité.
+2. **Rôles** : aujourd'hui tout compte peut tout faire, y compris supprimer
    une vente. Un rôle « vendeur » limité reste à définir.
-4. **Écran de code sans anti-capture** : une capture d'écran reste possible
+3. **Écran de code sans anti-capture** : une capture d'écran reste possible
    sur les écrans de données (`FLAG_SECURE` non activé).
-5. **Paramètres Argon2id non mesurés sur matériel réel** : à chronométrer sur
+4. **Paramètres Argon2id non mesurés sur matériel réel** : à chronométrer sur
    le téléphone cible ; si la vérification dépasse ~1,5 s, descendre à
-   `m=12 Mio, t=2` (toujours dans les recommandations OWASP).
+   `m=12 Mio, t=2` (toujours dans les recommandations OWASP). Le chiffrement
+   d'une sauvegarde bénéficie du même réglage (il est fait une fois par
+   export, quelques secondes sont acceptables).

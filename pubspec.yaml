@@ -1,7 +1,7 @@
 name: appharmacie
 description: "Gestion d'officine : catalogue, entrées par lot, péremptions (FEFO), ventes et facturation."
 publish_to: 'none'
-version: 1.4.0+4
+version: 1.5.0+5
 
 environment:
   sdk: '>=3.4.3 <4.0.0'

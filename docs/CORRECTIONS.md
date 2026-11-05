@@ -466,3 +466,57 @@ Les paramètres Argon2id n'ont pas pu être **chronométrés sur un téléphone
 réel** dans cet environnement. Recommandation : mesurer la vérification sur
 l'appareil cible ; au-delà de ~1,5 s, réduire à `m=12 Mio, t=2` (toujours dans
 les recommandations OWASP) — le format PHC rend ce réglage indolore.
+
+---
+
+## 13. Itération 8 — sauvegarde chiffrée par phrase secrète
+
+### 13.1 Le dernier trou
+
+La base était chiffrée, mais le fichier exporté ne l'était pas : un JSON en
+clair contenant tout l'historique, envoyé par courriel ou posé sur un Drive. Le
+chiffrement de la base devenait alors décoratif dès le premier export.
+
+### 13.2 Chaîne mise en place
+
+| Étape | Choix | Raison |
+|---|---|---|
+| Dérivation | **Argon2id** (19 Mio, 2 passes, sel de 16 octets) | coût mémoire, donc attaque hors ligne coûteuse sur la phrase |
+| Chiffrement | **AES-256-GCM** | authentifié : toute altération est détectée, pas de corruption silencieuse |
+| Nonce | 12 octets aléatoires par export | un nonce réutilisé casserait la confidentialité |
+| Clé | jamais stockée, redérivée à chaque ouverture | rien à voler sur l'appareil |
+| Conteneur | enveloppe **JSON auto-descriptive** (kdf + nonce + données + tag) | lisible, versionnée, sans dépendance à un format binaire maison |
+
+### 13.3 Interface
+
+- L'export demande une **phrase secrète (8 caractères minimum) avec
+  confirmation** : c'est le chemin par défaut.
+- Un export **sans protection** reste possible, derrière un avertissement
+  explicite et une confirmation.
+- La restauration détecte l'enveloppe, demande la phrase (**3 essais**), puis
+  applique la transaction habituelle.
+- Le message d'erreur est **le même** pour une phrase fausse et un fichier
+  altéré : ne rien apprendre à un attaquant.
+
+### 13.4 Le refus assumé
+
+Aucune récupération de phrase, aucune clé de secours stockée quelque part « au
+cas où ». Une telle clé annulerait le chiffrement. L'interface le dit avant
+l'export, et `docs/SECURITE.md` le répète : **phrase perdue = sauvegarde
+perdue**.
+
+### 13.5 Tests
+
+9 tests supplémentaires (`test/chiffrement_test.dart`) : aller-retour,
+enveloppe conforme, phrase incorrecte, deux exports tous deux valides mais
+différents, enveloppe altérée rejetée, phrase trop courte refusée, détection des
+enveloppes, refus d'un fichier en clair, et intégration complète
+(chiffrement → déchiffrement → validation du format de sauvegarde).
+Total du projet : **64 tests**.
+
+### 13.6 Ce qu'il reste, sans se raconter d'histoires
+
+- **Rôles** (vendeur / gestionnaire) : décision métier, pas technique.
+- **Biométrie** : confort d'usage, à ajouter après les rôles.
+- **Mesure du coût Argon2id sur appareil réel** : 1 mesure, 1 réglage.
+- **`FLAG_SECURE`** sur les écrans sensibles (captures d'écran).

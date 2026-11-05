@@ -19,7 +19,7 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
 | **Entrées** | Réception par lot (numéro de lot + date de péremption), historique complet |
 | **Ventes** | Vente multi-lignes, contrôle de stock, consommation **FEFO**, facture PDF A4 |
 | **Lots** | Suivi des péremptions, filtres (≤ 90 j, ≤ 30 j, périmés), ordre FEFO |
-| **Sauvegarde** | Export JSON complet partagé (courriel, Drive) et restauration transactionnelle |
+| **Sauvegarde** | Export complet **chiffré par phrase secrète** (AES-256-GCM + Argon2id), partage système, restauration transactionnelle |
 | **Sécurité** | Base SQLite **chiffrée** (SQLCipher), **code d'accès** 4–6 chiffres, reverrouillage automatique |
 
 ---
@@ -43,9 +43,10 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
    un prix ne réécrit pas le chiffre d'affaires passé.
 8. **Dates stockées en `AAAA-MM-JJ`**, affichées en `JJ/MM/AAAA`.
 9. **Mots de passe hachés**, migration transparente des comptes existants.
-10. **Une sauvegarde = un fichier JSON versionné** contenant toutes les tables ;
-    la restauration est transactionnelle (tout ou rien) et recalcule le stock
-    depuis les lots.
+10. **Une sauvegarde = un fichier versionné** contenant toutes les tables,
+    **chiffré en AES-256-GCM** avec une clé dérivée de la phrase secrète par
+    Argon2id ; la restauration est transactionnelle (tout ou rien) et recalcule
+    le stock depuis les lots.
 11. **La base est chiffrée** (SQLCipher). La clé de 32 octets est générée sur
     l'appareil et conservée par le Keystore du système ; un fichier `.db`
     copié est inutilisable sans elle. Les bases existantes sont converties
@@ -94,6 +95,8 @@ La CI GitHub Actions (`.github/workflows/flutter.yml`) exécute `analyze` et
 - `test/validators_test.dart` — validation, formatage, dates ISO
 - `test/backup_format_test.dart` — format de sauvegarde, refus des fichiers invalides
 - `test/verrouillage_test.dart` — politique du code d'accès, empreintes
+- `test/chiffrement_test.dart` — chiffrement de la sauvegarde (aller-retour,
+  mauvaise phrase, fichier altéré)
 - `test/securite_test.dart` — hachage et vérification des mots de passe
 - `test/widget_test.dart` — démarrage de l'application
 
@@ -107,6 +110,7 @@ lib/
 ├── core/                     # Socle transverse
 │   ├── backup.dart           # Export / partage / restauration du fichier
 │   ├── backup_format.dart    # Format JSON versionné (pur, testable)
+│   ├── chiffrement.dart      # Enveloppe AES-256-GCM de la sauvegarde
 │   ├── coffre.dart           # Clé de chiffrement (Keystore du système)
 │   ├── gardien_session.dart  # Écran de verrouillage + reverrouillage auto
 │   ├── verrouillage.dart     # Code d'accès (empreinte, tentatives, blocage)
@@ -161,13 +165,15 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
   migrées automatiquement.
 - Sauvegarde Android désactivée (`android:allowBackup="false"`).
 - Requêtes SQL entièrement paramétrées.
+- **Sauvegardes chiffrées** par phrase secrète (AES-256-GCM), enveloppe JSON
+  autoportante (sel et nonce aléatoires à chaque export, contenu authentifié).
 - Modèle de menace complet et limites : [`docs/SECURITE.md`](docs/SECURITE.md).
 - **Aucune permission Android demandée** : l'application n'a ni accès à
   internet, ni au stockage, ni à la localisation. Les données ne sortent du
   téléphone que par l'export de sauvegarde, déclenché par l'utilisateur.
 
-**Avant une mise en production** : chiffrement du fichier de sauvegarde, rôles
-utilisateurs, verrouillage biométrique.
+**Avant une mise en production** : rôles utilisateurs, verrouillage
+biométrique.
 
 ---
 
@@ -180,8 +186,8 @@ utilisateurs, verrouillage biométrique.
 - La signature de release nécessite **votre** keystore
   (`android/key.properties`, voir `docs/PUBLICATION_PLAY_STORE.md`) ; sans lui,
   les builds sont signés avec les clés de debug.
-- Le **fichier de sauvegarde JSON n'est pas chiffré** (il doit rester
-  restaurable sur un autre appareil) : à conserver en lieu sûr.
+- **Phrase secrète de sauvegarde oubliée** = sauvegarde perdue : il n'existe
+  aucune récupération (contrepartie assumée du chiffrement).
 - Pas de rôles (tout compte peut tout faire) ni de biométrie.
 
 Voir `docs/AUDIT_PROJET.md` (analyse initiale) et `docs/CORRECTIONS.md`
