@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/feedback.dart';
+import '../core/session.dart';
 import '../core/theme.dart';
 import '../core/verrouillage.dart';
 import '../core/verrouillage_regles.dart';
@@ -169,6 +170,21 @@ class _SecuritePageState extends State<SecuritePage> {
 
   @override
   Widget build(BuildContext context) {
+    if (!Session.permissions.peutGererSecurite) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Sécurité')),
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Text(
+              'Écran réservé au gestionnaire.',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      );
+    }
+
     final etat = _etat;
     final actif = etat?.actif ?? false;
 

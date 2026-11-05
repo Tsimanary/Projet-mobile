@@ -13,13 +13,14 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
 
 | Module | Contenu |
 |---|---|
-| **Authentification** | Compte local, mot de passe haché (sel + SHA-256) |
+| **Authentification** | Comptes locaux, mots de passe **Argon2id**, deux rôles |
 | **Tableau de bord** | Recette cumulée, ruptures, stocks faibles, péremptions ≤ 90 j, top 5 des ventes |
 | **Médicaments** | Ajout, recherche, modification, suppression protégée |
 | **Entrées** | Réception par lot (numéro de lot + date de péremption), historique complet |
 | **Ventes** | Vente multi-lignes, contrôle de stock, consommation **FEFO**, facture PDF A4 |
 | **Lots** | Suivi des péremptions, filtres (≤ 90 j, ≤ 30 j, périmés), ordre FEFO |
 | **Sauvegarde** | Export complet **chiffré par phrase secrète** (AES-256-GCM + Argon2id), partage système, restauration transactionnelle |
+| **Utilisateurs** | Création de comptes, changement de rôle, suppression encadrée (gestionnaire) |
 | **Sécurité** | Base SQLite **chiffrée** (SQLCipher), **code d'accès** 4–6 chiffres, reverrouillage automatique |
 
 ---
@@ -57,6 +58,13 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
 13. **Les secrets sont dérivés en Argon2id** (format PHC autoportant). Les
     empreintes SHA-256 héritées restent vérifiables et sont réécrites à la
     volée à la première saisie correcte.
+14. **Deux rôles, appliqués par le code, pas par l'interface** : le vendeur
+    consulte, vend et reçoit les livraisons ; le gestionnaire ajoute la
+    correction/suppression des ventes et des entrées, le catalogue (donc les
+    prix), les comptes, la sauvegarde/restauration et les réglages de sécurité.
+    Chaque opération sensible appelle `Session.exigerGestionnaire` côté SQL :
+    masquer un bouton ne suffit pas. La matrice est **fermée par défaut** et
+    il reste toujours au moins un gestionnaire.
 
 Ces règles sont couvertes par des tests (`test/`).
 
@@ -98,7 +106,11 @@ La CI GitHub Actions (`.github/workflows/flutter.yml`) exécute `analyze` et
 - `test/chiffrement_test.dart` — chiffrement de la sauvegarde (aller-retour,
   mauvaise phrase, fichier altéré)
 - `test/securite_test.dart` — hachage et vérification des mots de passe
+- `test/roles_test.dart` — matrice des droits, lecture des rôles, session,
+  garde du dernier gestionnaire
 - `test/widget_test.dart` — démarrage de l'application
+
+**81 tests** au total (`flutter test`).
 
 ---
 
@@ -118,6 +130,8 @@ lib/
 │   ├── exceptions.dart       # Exceptions métier (messages utilisateur)
 │   ├── feedback.dart         # Snackbars
 │   ├── format.dart           # Montants, dates ISO, parsing tolérant
+│   ├── roles.dart            # Rôles, matrice des droits, règles de comptes
+│   ├── session.dart          # Compte connecté et vérification des droits
 │   ├── securite.dart         # Hachage des mots de passe
 │   ├── stock_rules.dart      # Règles pures : disponibilité + FEFO
 │   ├── theme.dart            # Palette et thème Material 3
@@ -128,7 +142,7 @@ lib/
 ├── Authentification/         # Connexion, création de compte
 ├── dialog/                   # Formulaires (médicament, entrée, vente)
 ├── pages/                    # Écrans (accueil, médicaments, entrées, ventes, lots,
-│                             #  sauvegarde, sécurité, verrouillage)
+│                             #  sauvegarde, sécurité, utilisateurs, verrouillage)
 └── assets/images/
 
 android/                      # AGP 8.3.2, Gradle 8.4, Kotlin 1.9.22, JDK 17
@@ -136,19 +150,21 @@ docs/                         # audit, corrections, sécurité, publication, con
 store/                        # icônes du Play Store (1024 et 512 px)
 ```
 
-### Base de données (schéma v3)
+### Base de données (schéma v5)
 
 | Table | Rôle |
 |---|---|
-| `users` | Comptes (`usrPassword` = hachage, `usrSalt` = sel) |
+| `users` | Comptes (`usrPassword` = hachage Argon2id, `usrRole` = rôle) |
 | `medics` | Catalogue + stock courant (projection des lots) |
 | `lots` | Lots reçus : quantité, restant, péremption, date de réception |
 | `mouvements_stock` | Journal des entrées/sorties (`reference` = `ENTREE:<id>` ou `ACHAT:<id>`) |
-| `entrees` | Historique des réceptions (une ligne par réception, avec lot) |
-| `achats` | Lignes de vente, avec `prixUnitaire` figé |
+| `entrees` | Historique des réceptions (une ligne par réception, avec lot et `auteur`) |
+| `achats` | Lignes de vente, avec `prixUnitaire` figé et `auteur` |
 
-**Migrations** : `onUpgrade` gère v1 → v2 (hachage, prix figé) puis v2 → v3
-(lots, mouvements, dates ISO). Le stock existant est repris dans un lot
+**Migrations** : `onUpgrade` gère v1 → v2 (hachage, prix figé), v2 → v3
+(lots, mouvements, dates ISO), v3 → v4 (paramètres) puis v4 → v5 (rôles,
+auteur des mouvements). Les comptes créés avant les rôles deviennent
+**gestionnaires** : ce sont les propriétaires de l'installation. Le stock existant est repris dans un lot
 technique `STOCK-REPRIS` sans péremption : aucune donnée n'est inventée et
 l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
 
@@ -168,12 +184,14 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
 - **Sauvegardes chiffrées** par phrase secrète (AES-256-GCM), enveloppe JSON
   autoportante (sel et nonce aléatoires à chaque export, contenu authentifié).
 - Modèle de menace complet et limites : [`docs/SECURITE.md`](docs/SECURITE.md).
+- **Deux rôles** vérifiés dans la couche données : un vendeur ne peut ni
+  supprimer, ni corriger, ni changer un prix, même en contournant l'interface.
 - **Aucune permission Android demandée** : l'application n'a ni accès à
   internet, ni au stockage, ni à la localisation. Les données ne sortent du
   téléphone que par l'export de sauvegarde, déclenché par l'utilisateur.
 
-**Avant une mise en production** : rôles utilisateurs, verrouillage
-biométrique.
+**Avant une mise en production** : verrouillage biométrique, blocage des
+captures d'écran (`FLAG_SECURE`).
 
 ---
 
@@ -181,14 +199,18 @@ biométrique.
 
 - Les données vivent sur **un seul appareil** : la sauvegarde JSON permet de
   migrer ou de restaurer, pas de synchroniser plusieurs postes en temps réel.
-- Un seul compte par installation (pas d'écran d'administration).
+- Les comptes sont locaux à l'appareil : pas de synchronisation des rôles
+  entre plusieurs téléphones.
 - Facture sans mentions légales ni TVA.
 - La signature de release nécessite **votre** keystore
   (`android/key.properties`, voir `docs/PUBLICATION_PLAY_STORE.md`) ; sans lui,
   les builds sont signés avec les clés de debug.
 - **Phrase secrète de sauvegarde oubliée** = sauvegarde perdue : il n'existe
   aucune récupération (contrepartie assumée du chiffrement).
-- Pas de rôles (tout compte peut tout faire) ni de biométrie.
+- Pas de biométrie, pas de `FLAG_SECURE` (captures d'écran et
+  miniatures dans le sélecteur d'applications restent possibles).
+- Pas de journal d'audit consultable : la trace existe en base
+  (`mouvements_stock`, colonnes `auteur`) mais n'a pas d'écran dédié.
 
 Voir `docs/AUDIT_PROJET.md` (analyse initiale) et `docs/CORRECTIONS.md`
 (journal des corrections).

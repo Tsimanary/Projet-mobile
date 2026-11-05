@@ -6,7 +6,7 @@ production et à chaque évolution sensible.
 
 ---
 
-## 1. Trois verrous, trois rôles
+## 1. Trois verrous
 
 | Verrou | Ce qu'il protège | Où vit le secret |
 |---|---|---|
@@ -57,6 +57,7 @@ Application  ──►  SQLCipher  ◄──  Clé 32 octets (Keystore Android)
 | Fichier de **sauvegarde** exporté (courriel, Drive, clé USB) | **Oui, si la phrase secrète est utilisée** | AES-256-GCM, clé dérivée en Argon2id — voir § 5 |
 | Sauvegarde exportée **sans protection** (choix explicite) | **Non** | JSON en clair, précédé d'un avertissement |
 | Phrase secrète oubliée | — | sauvegarde perdue : aucune récupération possible (par conception) |
+| Un vendeur tente de supprimer une vente ou un prix | **Oui** | rôle vérifié dans la couche données (§ 8) |
 
 ---
 
@@ -213,11 +214,62 @@ survit à une connexion réussie.
 
 ---
 
-## 8. Limites connues et travaux restants
+## 8. Rôles : ce que chacun a le droit de faire
+
+Les verrous précédents protègent le fichier et l'accès à l'application. Ils ne
+disent rien de ce qu'une personne **autorisée** peut casser. D'où deux rôles,
+volontairement peu nombreux :
+
+| Capacité | Vendeur | Gestionnaire |
+|---|:---:|:---:|
+| Consulter le tableau de bord, le catalogue, les lots, l'historique | ✔ | ✔ |
+| Enregistrer une vente | ✔ | ✔ |
+| Réceptionner une livraison (créer une entrée de stock) | ✔ | ✔ |
+| Corriger ou supprimer une entrée | — | ✔ |
+| Corriger ou supprimer une vente | — | ✔ |
+| Ajouter / modifier / supprimer un médicament (donc **fixer un prix**) | — | ✔ |
+| Créer un compte, changer un rôle, supprimer un accès | — | ✔ |
+| Exporter une sauvegarde, en restaurer une | — | ✔ |
+| Régler le code d'accès et les options de sécurité | — | ✔ |
+
+**Ce n'est pas décoratif.** Chaque opération sensible est refusée dans la
+couche données (`Session.exigerGestionnaire` → `OperationRefuseeException`),
+pas seulement masquée dans l'interface : un bouton caché ne protège rien si
+l'appel reste possible.
+
+Trois règles de conception :
+
+1. **Fermé par défaut.** La classe `Permissions` énumère chaque droit
+   explicitement. Une fonctionnalité ajoutée sans y toucher est réservée au
+   gestionnaire.
+2. **Moindre privilège en cas de doute.** Sans session ouverte (démarrage,
+   plantage, restauration), l'application se comporte comme un vendeur. La
+   session vit en mémoire seulement : rien n'est écrit sur le disque, donc
+   rien ne « traîne » après fermeture.
+3. **Il reste toujours un gestionnaire.** Retirer le rôle au dernier
+   gestionnaire, ou supprimer son compte, est refusé : sinon plus personne ne
+   peut créer de compte ni restaurer une sauvegarde. Un compte ne peut pas non
+   plus supprimer celui avec lequel il est connecté.
+
+À la migration, **tous les comptes existants deviennent gestionnaires** : ce
+sont les propriétaires de l'installation, et les rétrograder d'office
+retirerait des droits sans que personne l'ait demandé. Un rôle inconnu en base
+(altération manuelle) est, lui, lu comme « vendeur ».
+
+Ce que les rôles **ne** font pas : ils ne protègent pas contre quelqu'un qui
+connaît un mot de passe de gestionnaire, ne tracent pas les consultations, et
+ne remplacent pas une politique de personnel (un vendeur qui quitte l'officine
+doit voir son compte supprimé).
+
+---
+
+## 9. Limites connues et travaux restants
 
 1. **Pas de verrouillage biométrique** (`local_auth`) : confort, pas sécurité.
-2. **Rôles** : aujourd'hui tout compte peut tout faire, y compris supprimer
-   une vente. Un rôle « vendeur » limité reste à définir.
+2. **Journal d'audit** : la base conserve l'auteur d'une entrée ou d'une
+   vente (`auteur`) et le journal des mouvements, mais aucun écran ne les
+   affiche — une correction de prix reste donc invisible en pratique.
+   (Les rôles, eux, sont faits : voir § 8.)
 3. **Écran de code sans anti-capture** : une capture d'écran reste possible
    sur les écrans de données (`FLAG_SECURE` non activé).
 4. **Paramètres Argon2id non mesurés sur matériel réel** : à chronométrer sur

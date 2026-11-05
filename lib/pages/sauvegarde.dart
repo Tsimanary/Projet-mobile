@@ -6,6 +6,7 @@ import '../core/backup_format.dart';
 import '../core/chiffrement.dart';
 import '../core/exceptions.dart';
 import '../core/feedback.dart';
+import '../core/session.dart';
 import '../core/theme.dart';
 import '../core/widgets/confirm_dialog.dart';
 import '../core/widgets/dialogue_phrase.dart';
@@ -144,6 +145,9 @@ class _SauvegardePageState extends State<SauvegardePage> {
       );
 
       if (!mounted) return;
+      // Les comptes viennent peut-être de changer : on repart d'une session
+      // vide, avec les droits du compte qui se reconnectera.
+      Session.fermer();
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute<void>(builder: (_) => const LoginPage()),
         (route) => false,
@@ -199,6 +203,21 @@ class _SauvegardePageState extends State<SauvegardePage> {
 
   @override
   Widget build(BuildContext context) {
+    if (!Session.permissions.peutRestaurer) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Sauvegarde')),
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Text(
+              'Écran réservé au gestionnaire.',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(title: const Text('Sauvegarde')),
       body: AbsorbPointer(

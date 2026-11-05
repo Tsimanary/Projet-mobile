@@ -14,7 +14,9 @@ import '../core/backup_format.dart';
 import '../core/coffre.dart';
 import '../core/exceptions.dart';
 import '../core/format.dart';
+import '../core/roles.dart';
 import '../core/securite.dart';
+import '../core/session.dart';
 import '../core/stock_rules.dart';
 
 /// Accès unique à la base SQLite locale.
@@ -30,6 +32,8 @@ import '../core/stock_rules.dart';
 ///  * les dates sont stockées en `AAAA-MM-JJ` ;
 ///  * les mots de passe et le code d'accès sont hachés en **Argon2id**
 ///    (empreintes SHA-256 héritées migrées à la volée) ;
+///  * les opérations sensibles (suppressions, catalogue, comptes,
+///    restauration) vérifient le **rôle** de la session en cours ;
 ///  * un médicament possédant un historique ne peut pas être supprimé ;
 ///  * le fichier de base est **chiffré** (SQLCipher), avec une clé conservée
 ///    dans le coffre du système (Keystore) et une conversion automatique des
@@ -43,7 +47,7 @@ class DatabaseHelper {
   factory DatabaseHelper() => _instance;
 
   static const String _nomBase = 'pharmacie.db';
-  static const int _versionBase = 4;
+  static const int _versionBase = 5;
 
   static const String _sqlLots = 'CREATE TABLE IF NOT EXISTS lots ('
       'id INTEGER PRIMARY KEY AUTOINCREMENT, '
@@ -100,7 +104,8 @@ class DatabaseHelper {
           'usrId INTEGER PRIMARY KEY AUTOINCREMENT, '
           'usrName TEXT NOT NULL UNIQUE, '
           'usrPassword TEXT NOT NULL, '
-          'usrSalt TEXT)',
+          'usrSalt TEXT, '
+          "usrRole TEXT NOT NULL DEFAULT 'gestionnaire')",
         );
         await db.execute(
           'CREATE TABLE medics ('
@@ -118,7 +123,8 @@ class DatabaseHelper {
           'stockEntr INTEGER NOT NULL, '
           'dateEntr TEXT, '
           'numeroLot TEXT, '
-          'datePeremption TEXT)',
+          'datePeremption TEXT, '
+          'auteur TEXT)',
         );
         await db.execute(
           'CREATE TABLE achats ('
@@ -128,7 +134,8 @@ class DatabaseHelper {
           'nomClient TEXT, '
           'dateAchat TEXT, '
           'nbr INTEGER NOT NULL, '
-          'prixUnitaire INTEGER)',
+          'prixUnitaire INTEGER, '
+          'auteur TEXT)',
         );
         await db.execute(_sqlLots);
         await db.execute(_sqlMouvements);
@@ -148,6 +155,19 @@ class DatabaseHelper {
         if (ancienneVersion < 4) {
           // v3 -> v4 : réglages applicatifs (code d'accès, divers).
           await db.execute(_sqlParametres);
+        }
+        if (ancienneVersion < 5) {
+          // v4 -> v5 : rôles des comptes et traçabilité de l'auteur.
+          // Les comptes existants deviennent gestionnaires : ce sont les
+          // propriétaires de l'installation.
+          await _ajouterColonneSiAbsente(
+            db,
+            'users',
+            'usrRole',
+            "TEXT NOT NULL DEFAULT 'gestionnaire'",
+          );
+          await _ajouterColonneSiAbsente(db, 'entrees', 'auteur', 'TEXT');
+          await _ajouterColonneSiAbsente(db, 'achats', 'auteur', 'TEXT');
         }
         await _creerIndex(db);
       },
@@ -597,10 +617,11 @@ class DatabaseHelper {
   // Utilisateurs
   // ---------------------------------------------------------------------------
 
-  Future<bool> login(Users user) async {
+  /// Vérifie les identifiants et retourne le compte (rôle compris), ou `null`.
+  Future<Users?> login(Users user) async {
     final db = await database;
     final nom = user.usrName.trim();
-    if (nom.isEmpty || user.usrPassword.isEmpty) return false;
+    if (nom.isEmpty || user.usrPassword.isEmpty) return null;
 
     final lignes = await db.query(
       'users',
@@ -608,25 +629,33 @@ class DatabaseHelper {
       whereArgs: <Object?>[nom],
       limit: 1,
     );
-    if (lignes.isEmpty) return false;
+    if (lignes.isEmpty) return null;
 
     final ligne = lignes.first;
     final sel = ligne['usrSalt'] as String?;
     final motDePasseStocke = (ligne['usrPassword'] ?? '').toString();
+    final role = RoleUtilisateur.depuis(ligne['usrRole']?.toString());
+    final compte = Users(
+      usrId: (ligne['usrId'] as num?)?.toInt(),
+      usrName: (ligne['usrName'] ?? nom).toString(),
+      usrPassword: '',
+      usrRole: role,
+    );
 
     // 1. Format courant : Argon2id (empreinte autoportante).
     if (Securite.estEmpreinteArgon2id(motDePasseStocke)) {
-      return Securite.verifierFort(
+      final valide = await Securite.verifierFort(
         secret: user.usrPassword,
         empreinte: motDePasseStocke,
       );
+      return valide ? compte : null;
     }
 
     // 2. Compte créé avant tout hachage : mot de passe en clair.
     if (sel == null || sel.isEmpty) {
-      if (motDePasseStocke != user.usrPassword) return false;
+      if (motDePasseStocke != user.usrPassword) return null;
       await _reecrireMotDePasse(db, nom, user.usrPassword);
-      return true;
+      return compte;
     }
 
     // 3. Ancien SHA-256 salé : vérification puis migration à la volée.
@@ -635,10 +664,10 @@ class DatabaseHelper {
       sel: sel,
       hashAttendu: motDePasseStocke,
     );
-    if (valide) {
-      await _reecrireMotDePasse(db, nom, user.usrPassword);
-    }
-    return valide;
+    if (!valide) return null;
+
+    await _reecrireMotDePasse(db, nom, user.usrPassword);
+    return compte;
   }
 
   /// Réécrit un mot de passe au format Argon2id (migration transparente).
@@ -659,12 +688,23 @@ class DatabaseHelper {
     );
   }
 
+  /// Crée un compte.
+  ///
+  /// * premier compte de l'installation : toujours **gestionnaire** (c'est le
+  ///   propriétaire, celui qui installe l'application) ;
+  /// * ensuite : réservé au gestionnaire connecté.
   Future<int> signup(Users user) async {
     final nom = user.usrName.trim();
     if (nom.isEmpty) {
       throw ArgumentError("Le nom d'utilisateur ne peut pas être vide.");
     }
     final db = await database;
+
+    final nombreComptes = await _compterTous(db, 'users');
+    final premierCompte = nombreComptes == 0;
+    if (!premierCompte) {
+      Session.exigerGestionnaire('créer un compte');
+    }
 
     final existant = await db.query(
       'users',
@@ -683,10 +723,108 @@ class DatabaseHelper {
       return await db.insert('users', <String, Object?>{
         'usrName': nom,
         'usrPassword': empreinte,
+        'usrRole': (premierCompte ? RoleUtilisateur.gestionnaire : user.usrRole)
+            .valeurBase,
       });
     } on DatabaseException {
       throw UtilisateurDejaExisteException(nom);
     }
+  }
+
+  /// Nom du compte connecté, inscrit dans chaque ligne créée : en cas de
+  /// doute sur une saisie, on sait qui l'a enregistrée.
+  String? _auteurCourant() {
+    final nom = Session.nom.trim();
+    return nom.isEmpty ? null : nom;
+  }
+
+  Future<int> _compterTous(DatabaseExecutor executeur, String table) async {
+    final resultat = await executeur.rawQuery(
+      'SELECT COUNT(*) AS total FROM $table',
+    );
+    return (resultat.first['total'] as num?)?.toInt() ?? 0;
+  }
+
+  /// Nombre de comptes enregistrés (sert à savoir s'il s'agit de la première
+  /// installation : le tout premier compte est forcément gestionnaire).
+  Future<int> nombreComptes() async {
+    final db = await database;
+    return _compterTous(db, 'users');
+  }
+
+  /// Comptes de l'application, triés par nom.
+  Future<List<Users>> getAllUsers() async {
+    Session.exigerGestionnaire('consulter les comptes');
+    final db = await database;
+    final lignes = await db.query('users', orderBy: 'usrName COLLATE NOCASE');
+    return lignes.map((ligne) => Users.fromMap(ligne)).toList();
+  }
+
+  /// Change le rôle d'un compte.
+  ///
+  /// Refuse de retirer le dernier gestionnaire : l'application deviendrait
+  /// ingérable (plus personne ne peut gérer les comptes ni restaurer).
+  Future<int> updateUserRole(int usrId, RoleUtilisateur role) async {
+    Session.exigerGestionnaire('changer le rôle d\'un compte');
+    final db = await database;
+
+    final cible = await db.query(
+      'users',
+      where: 'usrId = ?',
+      whereArgs: <Object?>[usrId],
+      limit: 1,
+    );
+    if (cible.isEmpty) return 0;
+
+    final actuel = Users.fromMap(cible.first);
+    final gestionnaires = await _nombreGestionnaires(db);
+    ReglesComptes.verifierRetraitGestionnaire(
+      gestionnaires: gestionnaires,
+      roleActuel: actuel.usrRole,
+    );
+
+    return db.update(
+      'users',
+      <String, Object?>{'usrRole': role.valeurBase},
+      where: 'usrId = ?',
+      whereArgs: <Object?>[usrId],
+    );
+  }
+
+  Future<int> _nombreGestionnaires(DatabaseExecutor executeur) async {
+    final resultat = await executeur.rawQuery(
+      "SELECT COUNT(*) AS total FROM users WHERE usrRole = 'gestionnaire'",
+    );
+    return (resultat.first['total'] as num?)?.toInt() ?? 0;
+  }
+
+  /// Supprime un compte (jamais le dernier gestionnaire, jamais soi-même).
+  Future<int> deleteUser(int usrId) async {
+    Session.exigerGestionnaire('supprimer un compte');
+    final db = await database;
+
+    final lignes = await db.query(
+      'users',
+      where: 'usrId = ?',
+      whereArgs: <Object?>[usrId],
+      limit: 1,
+    );
+    if (lignes.isEmpty) return 0;
+
+    final compte = Users.fromMap(lignes.first);
+    final connecte = Session.nom.isNotEmpty &&
+        compte.usrName.toLowerCase() == Session.nom.toLowerCase();
+    ReglesComptes.verifierSuppression(
+      gestionnaires: await _nombreGestionnaires(db),
+      roleCible: compte.usrRole,
+      compteConnecte: connecte,
+    );
+
+    return db.delete(
+      'users',
+      where: 'usrId = ?',
+      whereArgs: <Object?>[usrId],
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -730,6 +868,7 @@ class DatabaseHelper {
   }
 
   Future<int> insertMedic(Medic medic) async {
+    Session.exigerGestionnaire('ajouter un médicament au catalogue');
     final db = await database;
     final numero = medic.numMed.trim();
     final designation = medic.designMed.trim();
@@ -758,6 +897,7 @@ class DatabaseHelper {
   /// Met à jour le médicament **sans toucher au stock** : le stock est
   /// exclusivement piloté par les lots, les entrées et les ventes.
   Future<int> updateMedic(Medic medic) async {
+    Session.exigerGestionnaire('modifier un médicament');
     final db = await database;
     final id = medic.id;
     if (id == null) {
@@ -806,6 +946,7 @@ class DatabaseHelper {
   }
 
   Future<int> deleteMedic(int id) async {
+    Session.exigerGestionnaire('supprimer un médicament');
     final db = await database;
     final medic = await getMedicById(id);
 
@@ -877,6 +1018,7 @@ class DatabaseHelper {
         'dateEntr': entree.dateEntr,
         'numeroLot': _numeroLot(entree.numeroLot),
         'datePeremption': entree.datePeremption,
+        'auteur': _auteurCourant(),
       });
 
       await _mouvementEntree(txn, entreeId: id, entree: entree);
@@ -887,6 +1029,7 @@ class DatabaseHelper {
   }
 
   Future<int> updateEntree(Entree entree) async {
+    Session.exigerGestionnaire('modifier une entrée de stock');
     final id = entree.id;
     if (id == null) {
       throw ArgumentError("Identifiant de l'entrée manquant.");
@@ -936,6 +1079,7 @@ class DatabaseHelper {
   }
 
   Future<int> deleteEntree(int id) async {
+    Session.exigerGestionnaire('supprimer une entrée de stock');
     final db = await database;
 
     return db.transaction((txn) async {
@@ -1036,6 +1180,9 @@ class DatabaseHelper {
 
   /// Contenu complet de la base, table par table (ordre de restauration).
   Future<Map<String, Object?>> exporterTout() async {
+    // Exporter, c'est faire sortir toute la base du téléphone : c'est un acte
+    // de gestion, pas une consultation.
+    Session.exigerGestionnaire('exporter une sauvegarde');
     final db = await database;
     final tables = <String, Object?>{};
     for (final table in tablesSauvegardees) {
@@ -1049,6 +1196,7 @@ class DatabaseHelper {
   /// Une transaction unique : en cas d'erreur (fichier incomplet, ligne
   /// corrompue), la base reste exactement dans son état précédent.
   Future<void> restaurerTout(Map<String, Object?> tables) async {
+    Session.exigerGestionnaire('restaurer une sauvegarde');
     final db = await database;
 
     await db.transaction((txn) async {
@@ -1151,6 +1299,7 @@ class DatabaseHelper {
           'dateAchat': ligne.dateAchat,
           'nbr': ligne.nbr,
           'prixUnitaire': ligne.prixUnitaire ?? medic.prixMed,
+          'auteur': _auteurCourant(),
         });
 
         await _consommerFefo(
@@ -1175,6 +1324,7 @@ class DatabaseHelper {
   /// Modifie une ligne de vente : l'ancienne consommation est intégralement
   /// annulée (retour dans les lots) avant d'appliquer la nouvelle.
   Future<int> updateAchat(Achat achat) async {
+    Session.exigerGestionnaire('modifier une vente');
     final id = achat.id;
     if (id == null) {
       throw ArgumentError("Identifiant de l'achat manquant.");
@@ -1234,6 +1384,7 @@ class DatabaseHelper {
   }
 
   Future<int> deleteAchat(int id) async {
+    Session.exigerGestionnaire('supprimer une vente');
     final db = await database;
 
     return db.transaction((txn) async {

@@ -134,6 +134,8 @@ ici lors de la première itération, ont été traités à l'itération 3 (secti
    ou un backend.
 3. **Rôles et gestion des utilisateurs** : aujourd'hui un compte, un appareil.
    L'inscription reste ouverte ; à restreindre dès qu'un écran d'administration existe.
+   → **traité à l'itération 9 (section 14)** : deux rôles, écran Utilisateurs,
+   inscription ouverte seulement à la première installation.
 4. **Argon2id / bcrypt** : SHA-256 salé est un progrès, pas l'état de l'art.
 5. **Signature de release et `applicationId`** (`com.example.appharmacie`) :
    nécessite votre keystore et votre domaine.
@@ -231,11 +233,13 @@ dates ISO, hachage, démarrage de l'application.
 
 ### 8.7 Toujours ouvert
 
-- Rôles et administration des comptes, Argon2id, chiffrement de la base.
+- Rôles et administration des comptes *(rôles : section 14)*, Argon2id,
+  chiffrement de la base.
 - Signature de release, `applicationId`, icônes, fiche Play Store.
 - Codes-barres (scan de lot) et inventaire physique.
 
-- Rôles et administration des comptes, Argon2id, chiffrement de la base.
+- Rôles et administration des comptes *(rôles : section 14)*, Argon2id,
+  chiffrement de la base.
 - Signature de release, `applicationId`, icônes, fiche Play Store.
 - Codes-barres (scan de lot) et inventaire physique.
 
@@ -345,6 +349,7 @@ signingConfig = keystorePropertiesFile.exists()
 - **Argon2id** et **chiffrement de la base** (`sqflite_sqlcipher`) : impact sur
   les performances et migration à planifier.
 - **Rôles** (vendeur / gestionnaire) : nécessite un écran d'administration.
+  → **traité à l'itération 9 (section 14)**.
 - **Verrouillage biométrique** (`local_auth`).
 - **Synchronisation multi-postes** : présuppose un backend.
 
@@ -520,3 +525,124 @@ Total du projet : **64 tests**.
 - **Biométrie** : confort d'usage, à ajouter après les rôles.
 - **Mesure du coût Argon2id sur appareil réel** : 1 mesure, 1 réglage.
 - **`FLAG_SECURE`** sur les écrans sensibles (captures d'écran).
+
+---
+
+## 14. Itération 9 — rôles vendeur et gestionnaire
+
+### 14.1 Le problème
+
+Tous les comptes pouvaient tout faire : un vendeur pouvait supprimer une
+vente, changer un prix ou effacer une réception. Une faute de frappe — ou une
+mauvaise intention — devenait indétectable, et la comptabilité ne valait plus
+rien. L'audit initial le classait déjà comme point bloquant (B7).
+
+### 14.2 Deux rôles, fermés par défaut
+
+`lib/core/roles.dart` :
+
+```dart
+enum RoleUtilisateur { gestionnaire, vendeur }
+```
+
+- **vendeur** : consulter, vendre, réceptionner une livraison ;
+- **gestionnaire** : tout, plus la correction/suppression des ventes et des
+  entrées, le catalogue (donc les prix), les comptes, la sauvegarde et la
+  sécurité.
+
+`Permissions` énumère chaque droit nommément et retourne `estGestionnaire`
+pour tout ce qui n'a pas été ouvert explicitement : une fonctionnalité
+ajoutée demain est réservée au gestionnaire par défaut.
+
+Lecture des données stockées (`RoleUtilisateur.depuis`) :
+
+| Valeur en base | Rôle lu | Pourquoi |
+|---|---|---|
+| `gestionnaire` | gestionnaire | — |
+| `vendeur` | vendeur | — |
+| absente / vide | **gestionnaire** | comptes créés avant les rôles = propriétaires |
+| inconnue (`admin`, texte libre…) | **vendeur** | on ne donne jamais un droit sur une valeur inattendue |
+
+### 14.3 La session, et pourquoi elle n'est pas persistée
+
+`lib/core/session.dart` garde le compte connecté **en mémoire seulement** :
+
+```dart
+Session.ouvrir(nom: compte.usrName, role: compte.usrRole);  // après login
+Session.exigerGestionnaire('supprimer une vente');          // lève si refusé
+```
+
+Pas d'écriture disque : fermer l'application (ou se déconnecter, ou
+restaurer) ferme la session. Sans session, `Session.role` vaut **vendeur**.
+Conséquence voulue : un plantage ou un redémarrage ne laisse jamais traîner
+des droits de gestion, et il n'existe aucun fichier à falsifier pour
+s'octroyer le rôle administrateur.
+
+### 14.4 Les droits sont vérifiés dans la couche données
+
+Masquer un bouton n'est pas une protection. Chaque opération sensible appelle
+`Session.exigerGestionnaire(...)` dans `lib/SQLite/sqlite.dart` :
+
+`insertMedic`, `updateMedic`, `deleteMedic`, `updateEntree`, `deleteEntree`,
+`updateAchat`, `deleteAchat`, `exporterTout`, `restaurerTout`, `signup`
+(hors premier compte), `getAllUsers`, `updateUserRole`, `deleteUser`.
+
+Le refus est une `OperationRefuseeException` avec un message affichable
+(« Action réservée au gestionnaire : supprimer une vente. »).
+
+### 14.5 Garde-fous sur les comptes
+
+`ReglesComptes` (pur, testable sans base) :
+
+- impossible de retirer le rôle au **dernier gestionnaire** ;
+- impossible de supprimer le dernier gestionnaire ;
+- impossible de supprimer le compte avec lequel on est connecté.
+
+Sans ces règles, une manipulation malheureuse laisserait une application sans
+personne capable de créer un compte ni de restaurer une sauvegarde : les
+données seraient définitivement inaccessibles.
+
+### 14.6 Base de données (v4 → v5) et traçabilité
+
+Migration additive, aucune donnée réécrite :
+
+| Colonne | Contenu |
+|---|---|
+| `users.usrRole TEXT NOT NULL DEFAULT 'gestionnaire'` | rôle du compte |
+| `entrees.auteur TEXT` | nom du compte qui a saisi la réception |
+| `achats.auteur TEXT` | nom du compte qui a encaissé la vente |
+
+`signup` : le **premier** compte d'une installation est toujours gestionnaire
+(c'est celui qui installe) ; les suivants sont créés depuis l'écran
+« Utilisateurs » par un gestionnaire connecté. La page de connexion ne propose
+plus « Créer un compte » que lors de la première utilisation.
+
+### 14.7 Interface
+
+- Nouvel écran `pages/utilisateurs.dart` : liste des comptes, création
+  (nom, mot de passe, rôle), changement de rôle, suppression — chaque action
+  confirmée, chaque refus expliqué.
+- `home.dart` : badge « nom · rôle », menu Utilisateurs / Sécurité /
+  Sauvegarde réservé au gestionnaire, `Session.fermer()` à la déconnexion.
+- `medicament.dart`, `entree.dart`, `achat.dart` : les boutons modifier /
+  supprimer disparaissent pour un vendeur ; le bouton d'ajout de médicament
+  aussi. Vendre et réceptionner restent disponibles.
+- `sauvegarde.dart`, `securite_page.dart` : écran de refus explicite si un
+  vendeur y accède autrement que par le menu.
+
+### 14.8 Tests
+
+17 tests supplémentaires (`test/roles_test.dart`) : matrice complète des deux
+rôles, lecture des rôles stockés (absent, casse, inconnu), session par défaut
+vendeur, refus vendeur, ouverture gestionnaire, fermeture, comptage des
+gestionnaires, garde du dernier gestionnaire, garde du compte connecté,
+messages affichables, sérialisation du rôle.
+Total du projet : **81 tests**.
+
+### 14.9 Ce qu'il reste
+
+- **Biométrie** (`local_auth`) : confort, pas sécurité.
+- **`FLAG_SECURE`** : empêcher captures d'écran et miniatures.
+- **Écran de journal d'audit** : les colonnes `auteur` et
+  `mouvements_stock` existent, il manque l'affichage.
+- **Mesure du coût Argon2id** sur le téléphone cible.
