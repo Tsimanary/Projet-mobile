@@ -29,7 +29,7 @@ clé de signature (que personne d'autre que vous ne doit détenir).
 
 ## 2. Prérequis machine
 
-- Flutter ≥ 3.22 (`flutter --version`)
+- Flutter ≥ 3.24 (`flutter --version`) — 3.47.9 utilisée pour les tests de référence
 - JDK **17** (`java -version`) — obligatoire avec AGP 8
 - Android SDK avec la plateforme **34**
 - `keytool` (fourni avec le JDK)

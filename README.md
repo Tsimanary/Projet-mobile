@@ -86,7 +86,8 @@ et sa version publiable [`docs/confidentialite.html`](docs/confidentialite.html)
 > ⚠️ `pubspec.lock` n'est pas régénéré automatiquement dans ce dépôt :
 > `flutter pub get` le met à jour.
 
-Prérequis : Flutter ≥ 3.22 (Dart ≥ 3.4).
+Prérequis : **Flutter ≥ 3.24** (Dart ≥ 3.4.3, plancher imposé par `pubspec.yaml`).
+La CI et les tests de référence tournent avec **Flutter 3.47.9 / Dart 3.13**.
 
 ---
 

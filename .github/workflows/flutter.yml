@@ -14,7 +14,10 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
+          # Doit rester >= au plancher de `pubspec.yaml`
+          # (sdk >= 3.4.3 => Flutter 3.24 minimum). La 3.22 faisait échouer
+          # `flutter pub get`, donc analyse et tests ne tournaient jamais.
+          flutter-version: '3.47.9'
           channel: stable
           cache: true
 

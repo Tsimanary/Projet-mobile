@@ -306,7 +306,7 @@ class _DialogueCompteState extends State<_DialogueCompte> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
-                AppTextField(
+                ChampTexte(
                   controleur: _nomControleur,
                   label: "Nom d'utilisateur",
                   icone: Icons.person_outline,
@@ -314,7 +314,7 @@ class _DialogueCompteState extends State<_DialogueCompte> {
                   validateur: Validators.nomUtilisateur,
                 ),
                 const SizedBox(height: 12),
-                AppTextField(
+                ChampTexte(
                   controleur: _motDePasseControleur,
                   label: 'Mot de passe',
                   icone: Icons.lock_outline,
@@ -331,7 +331,7 @@ class _DialogueCompteState extends State<_DialogueCompte> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                AppTextField(
+                ChampTexte(
                   controleur: _confirmationControleur,
                   label: 'Confirmer le mot de passe',
                   icone: Icons.lock_reset,
