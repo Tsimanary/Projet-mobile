@@ -1,5 +1,7 @@
 package com.tsimanary.appharmacie
 
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 
-class MainActivity: FlutterActivity()
+// FlutterFragmentActivity (et non FlutterActivity) : `local_auth` affiche
+// l'invite biométrique du système, qui est un fragment AndroidX.
+class MainActivity : FlutterFragmentActivity()

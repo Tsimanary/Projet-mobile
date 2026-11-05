@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
 
 import 'Authentification/login.dart';
+import 'core/biometrie_systeme.dart';
 import 'core/gardien_session.dart';
 import 'core/theme.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Branche le capteur biométrique réel. Aucun accès disque ici : le réglage
+  // est relu par le gardien de session, une fois la base ouverte.
+  installerBiometrieSysteme();
   runApp(const MyApp());
 }
 

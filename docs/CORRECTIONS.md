@@ -646,3 +646,85 @@ Total du projet : **81 tests**.
 - **Écran de journal d'audit** : les colonnes `auteur` et
   `mouvements_stock` existent, il manque l'affichage.
 - **Mesure du coût Argon2id** sur le téléphone cible.
+
+---
+
+## 15. Itération 10 — déverrouillage biométrique
+
+### 15.1 Le problème réel
+
+Le code d'accès protège l'ouverture, mais il se retape à chaque fois : à
+chaque démarrage, et après 30 s en arrière-plan. Une officine où l'on
+consulte l'application cinquante fois par jour finit par désactiver le
+verrou — la sécurité perdue est bien plus grande que celle apportée par un
+code à 4 chiffres.
+
+### 15.2 Ce qui a été fait
+
+`local_auth` (empreinte, visage, iris selon l'appareil) :
+
+- **Une seconde façon d'ouvrir le verrou, pas un quatrième verrou.** Le code
+  reste défini, modifiable, et redevient obligatoire après trois échecs du
+  capteur.
+- **Activation prouvée** : l'option ne s'active qu'après une empreinte
+  reconnue. On n'active pas un verrou qu'on n'a pas essayé.
+- **`biometricOnly: true`** : le code de déverrouillage du téléphone ne peut
+  pas servir de code d'accès de l'application.
+- **Réglage persistant** dans la table `parametres` de la base chiffrée
+  (`securite.biometrie.active`). Cette table n'est **pas** dans l'export de
+  sauvegarde : comme l'empreinte du code d'accès, le réglage reste lié à
+  l'appareil et n'est jamais transporté avec les données.
+- **Compteur d'échecs en mémoire** : il repart à zéro au redémarrage, sans
+  conséquence — le code garde ses 5 essais et son blocage persistant.
+- **Aucune panne ne bloque l'utilisateur** : plugin absent, capteur occupé,
+  `PlatformException`, base illisible → on retombe sur le code, avec un
+  message.
+
+### 15.3 Architecture (testable sans téléphone)
+
+| Fichier | Rôle |
+|---|---|
+| `lib/core/biometrie.dart` | politique pure : `ReglesBiometrie` (3 essais), `ResultatBiometrie`, façade `Biometrie` |
+| `lib/core/biometrie_systeme.dart` | `local_auth` + lecture/écriture du réglage dans `parametres` |
+| `test/biometrie_test.dart` | 14 tests avec un capteur simulé (aucun plugin requis) |
+
+`VerificateurBiometrique` et `DepotBiometrie` sont des interfaces : le cœur de
+décision ne connaît ni le plugin ni SQLite, donc les tests s'exécutent
+partout, y compris en intégration continue sans appareil.
+
+### 15.4 Android — ce qui devait changer
+
+| Point | Avant | Après | Pourquoi |
+|---|---|---|---|
+| `MainActivity` | `FlutterActivity` | **`FlutterFragmentActivity`** | l'invite biométrique est un fragment AndroidX |
+| `minSdk` | valeur Flutter (21) | **24** (Android 7.0) | plancher de `local_auth_android` |
+| Permissions | aucune | **`USE_BIOMETRIC`** | permission « normale » : pas de dialogue, pas d'accès aux données |
+| `pubspec.yaml` | — | **`local_auth: ^2.2.0`** | pub résout `local_auth_android` selon votre version de Flutter |
+
+### 15.5 Interface
+
+- **Écran de verrouillage** : bouton « Déverrouiller par empreinte » sous les
+  points, invite lancée automatiquement à l'ouverture quand l'option est
+  active ; messages d'échec avec essais restants ; après 3 échecs, le bouton
+  disparaît et un texte explique que le code est désormais seul.
+- **Écran Sécurité** : interrupteur « Déverrouillage par empreinte »,
+  désactivé (avec explication) si aucun code n'est défini ou si l'appareil
+  n'a aucune empreinte enregistrée ; désactivation confirmée.
+
+### 15.6 Tests et documentation
+
+14 tests supplémentaires (`test/biometrie_test.dart`) : 3 essais, messages,
+désactivation par défaut, activation prouvée ou refusée, relecture du réglage,
+base illisible, désactivation, succès, verrouillage après 3 échecs, remise à
+zéro, reprise après saisie du code, capteur absent, panne du capteur.
+Total du projet : **95 tests**.
+
+Documents mis à jour : `docs/SECURITE.md` (§ 1, § 3, nouveau § 9),
+`README.md`, `docs/PUBLICATION_PLAY_STORE.md` (permission, API 24, Data
+safety), version `1.7.0+7`.
+
+### 15.7 Ce qu'il reste
+
+- **`FLAG_SECURE`** : empêcher captures d'écran et miniatures.
+- **Écran de journal d'audit** (colonnes `auteur` déjà en base).
+- **Mesure du coût Argon2id** sur le téléphone cible.

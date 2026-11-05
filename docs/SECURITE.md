@@ -14,6 +14,10 @@ production et à chaque évolution sensible.
 | **Code d'accès** (4 à 6 chiffres) | l'accès à l'application sur un téléphone **déjà déverrouillé** | empreinte **Argon2id** dans la table `parametres` de la base chiffrée |
 | **Phrase secrète de sauvegarde** | le fichier exporté, qui circule hors du téléphone (courriel, clé USB, Drive) | nulle part : la clé AES-256 est redérivée en Argon2id à chaque ouverture |
 
+Le **déverrouillage biométrique** (§ 9) n'est pas un quatrième verrou : c'est
+une seconde façon d'ouvrir le verrou « code d'accès », sans le remplacer. Le
+code reste défini, modifiable et obligatoire après trois échecs du capteur.
+
 Ils sont indépendants : le code d'accès n'est pas la clé de chiffrement de la
 base, et la phrase de sauvegarde n'est pas le code d'accès. C'est volontaire —
 un code à 4 chiffres (10 000 combinaisons) est un verrou d'usage, pas un secret
@@ -58,6 +62,9 @@ Application  ──►  SQLCipher  ◄──  Clé 32 octets (Keystore Android)
 | Sauvegarde exportée **sans protection** (choix explicite) | **Non** | JSON en clair, précédé d'un avertissement |
 | Phrase secrète oubliée | — | sauvegarde perdue : aucune récupération possible (par conception) |
 | Un vendeur tente de supprimer une vente ou un prix | **Oui** | rôle vérifié dans la couche données (§ 8) |
+| Quelqu'un lit par-dessus l'épaule pendant la saisie du code | **Partiellement** | l'empreinte évite de taper le code devant témoin (§ 9) |
+| Doigt d'un tiers posé de force sur le capteur | **Non** | c'est le point faible intrinsèque de toute biométrie ; le code reste la clé, et les 3 échecs rendent la main au pavé numérique |
+| Doigt mouillé, capteur sale, capteur défaillant | Sans objet | repli automatique sur le code d'accès |
 
 ---
 
@@ -263,16 +270,53 @@ doit voir son compte supprimé).
 
 ---
 
-## 9. Limites connues et travaux restants
+## 9. Déverrouillage biométrique (confort, pas sécurité)
 
-1. **Pas de verrouillage biométrique** (`local_auth`) : confort, pas sécurité.
-2. **Journal d'audit** : la base conserve l'auteur d'une entrée ou d'une
+Objectif : ne plus retaper un code à chaque reverrouillage (30 s en
+arrière-plan), sans jamais enfermer l'utilisateur dehors.
+
+**Ce qui est fait**
+
+- `local_auth` (empreinte, visage, iris selon le téléphone), avec
+  `biometricOnly: true` : le **code de déverrouillage du téléphone** ne peut
+  pas tenir lieu de code d'accès de l'application.
+- L'option ne s'active qu'**après une empreinte reconnue** : on n'active pas
+  un verrou qu'on n'a pas essayé. Réglage conservé dans la table `parametres`
+  de la base chiffrée — table **exclue** de l'export de sauvegarde, comme
+  l'empreinte du code d'accès : aucun réglage lié à un appareil ne voyage.
+- **Trois échecs consécutifs** et le capteur n'est plus proposé : le pavé
+  numérique redevient le seul chemin (message explicite). Un succès du code
+  remet le compteur à zéro.
+- Le compteur vit **en mémoire** : il repart à zéro au redémarrage, ce qui est
+  sans risque — le code d'accès, lui, reste la clé de secours avec ses 5
+  essais et son blocage persistant.
+- Toute panne (plugin absent, capteur occupé, `PlatformException`) est traitée
+  comme un échec silencieux, jamais comme un plantage ni comme un succès.
+
+**Ce que cela ne change pas**
+
+Le chiffrement de la base, l'empreinte du code d'accès (Argon2id) et la phrase
+de sauvegarde sont inchangés. Désactiver l'empreinte ne modifie ni le code, ni
+les données.
+
+**Le point honnête**
+
+Une empreinte n'est pas un secret : elle se relève, elle se force, elle ne se
+change pas. C'est pourquoi elle n'est jamais la seule voie d'accès, pourquoi le
+code reste obligatoire en secours, et pourquoi l'option — un simple confort
+d'usage — est réglable et révocable par le gestionnaire.
+
+---
+
+## 10. Limites connues et travaux restants
+
+1. **Journal d'audit** : la base conserve l'auteur d'une entrée ou d'une
    vente (`auteur`) et le journal des mouvements, mais aucun écran ne les
    affiche — une correction de prix reste donc invisible en pratique.
    (Les rôles, eux, sont faits : voir § 8.)
-3. **Écran de code sans anti-capture** : une capture d'écran reste possible
+2. **Écran de code sans anti-capture** : une capture d'écran reste possible
    sur les écrans de données (`FLAG_SECURE` non activé).
-4. **Paramètres Argon2id non mesurés sur matériel réel** : à chronométrer sur
+3. **Paramètres Argon2id non mesurés sur matériel réel** : à chronométrer sur
    le téléphone cible ; si la vérification dépasse ~1,5 s, descendre à
    `m=12 Mio, t=2` (toujours dans les recommandations OWASP). Le chiffrement
    d'une sauvegarde bénéficie du même réglage (il est fait une fois par

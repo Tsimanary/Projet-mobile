@@ -1,7 +1,7 @@
 name: appharmacie
 description: "Gestion d'officine : catalogue, entrées par lot, péremptions (FEFO), ventes et facturation."
 publish_to: 'none'
-version: 1.6.0+6
+version: 1.7.0+7
 
 environment:
   sdk: '>=3.4.3 <4.0.0'
@@ -19,6 +19,9 @@ dependencies:
   printing: ^5.11.0
   share_plus: ^7.2.2
   file_picker: ^8.1.2
+  # Déverrouillage par empreinte / visage. `local_auth_android` est résolu par
+  # pub selon votre version de Flutter (>= 1.0.40 : Flutter 3.22).
+  local_auth: ^2.2.0
 
 dev_dependencies:
   flutter_test:

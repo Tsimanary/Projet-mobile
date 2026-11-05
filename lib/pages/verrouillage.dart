@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../core/biometrie.dart';
 import '../core/theme.dart';
 import '../core/verrouillage.dart';
 import '../core/verrouillage_regles.dart';
@@ -26,10 +27,16 @@ class _EcranVerrouillageState extends State<EcranVerrouillage> {
   EtatVerrouillage? _etat;
   Timer? _minuteur;
 
+  /// Le bouton du capteur est-il affiché ?
+  bool _biometriePossible = false;
+  bool _biometrieEnCours = false;
+  String? _infoBiometrie;
+
   @override
   void initState() {
     super.initState();
     _chargerEtat();
+    _preparerBiometrie();
     // Rafraîchit le compte à rebours pendant un blocage.
     _minuteur = Timer.periodic(const Duration(seconds: 1), (_) {
       final etat = _etat;
@@ -56,6 +63,77 @@ class _EcranVerrouillageState extends State<EcranVerrouillage> {
   }
 
   bool get _bloque => _etat?.bloque ?? false;
+
+  /// Relit le réglage puis propose le capteur, une fois, à l'ouverture.
+  Future<void> _preparerBiometrie() async {
+    await Biometrie.charger();
+    if (!Biometrie.estActive) return;
+
+    final disponible = await Biometrie.disponible();
+    if (!mounted) return;
+
+    if (!disponible) {
+      setState(() {
+        _biometriePossible = false;
+        _infoBiometrie = ReglesBiometrie.messageIndisponible;
+      });
+      return;
+    }
+
+    setState(() {
+      _biometriePossible = Biometrie.peutProposer;
+      _infoBiometrie = null;
+    });
+
+    if (_biometriePossible) await _tenterBiometrie();
+  }
+
+  /// Tente le déverrouillage biométrique. Tout échec laisse le pavé numérique
+  /// utilisable : la biométrie est un raccourci, jamais une obligation.
+  Future<void> _tenterBiometrie() async {
+    if (_biometrieEnCours || _verification) return;
+    if (!Biometrie.peutProposer) {
+      if (mounted) setState(() => _biometriePossible = false);
+      return;
+    }
+
+    setState(() {
+      _biometrieEnCours = true;
+      _erreur = null;
+      _infoBiometrie = null;
+    });
+
+    final resultat = await Biometrie.verifier();
+    if (!mounted) return;
+
+    var possible = false;
+    var erreur = _erreur;
+    var info = _infoBiometrie;
+
+    if (resultat == ResultatBiometrie.reussi) {
+      erreur = null;
+      info = null;
+    } else if (resultat == ResultatBiometrie.echec) {
+      erreur = ReglesBiometrie.messageEchec(Biometrie.echecsConsecutifs);
+      info = null;
+      possible = Biometrie.peutProposer;
+    } else if (resultat == ResultatBiometrie.verrouillee) {
+      erreur = ReglesBiometrie.messageVerrouille;
+      info = null;
+    } else if (resultat == ResultatBiometrie.indisponible) {
+      info = ReglesBiometrie.messageIndisponible;
+    }
+
+    setState(() {
+      _biometrieEnCours = false;
+      _biometriePossible = possible;
+      _erreur = erreur;
+      _infoBiometrie = info;
+      if (resultat == ResultatBiometrie.verrouillee) _saisie = '';
+    });
+
+    if (resultat == ResultatBiometrie.reussi) widget.onDeverrouille();
+  }
 
   void _ajouter(String chiffre) {
     if (_verification || _bloque) return;
@@ -119,7 +197,12 @@ class _EcranVerrouillageState extends State<EcranVerrouillage> {
       }
     });
 
-    if (accepte) widget.onDeverrouille();
+    if (accepte) {
+      // Le code a fait ses preuves : le compteur biométrique repart à zéro
+      // pour le prochain verrouillage.
+      Biometrie.reinitialiserEssais();
+      widget.onDeverrouille();
+    }
   }
 
   @override
@@ -193,6 +276,38 @@ class _EcranVerrouillageState extends State<EcranVerrouillage> {
                           ),
                   ),
                 ),
+                if (_biometrieEnCours)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 8),
+                    child: SizedBox(
+                      height: 22,
+                      width: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                if (_biometriePossible && !_biometrieEnCours)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: TextButton.icon(
+                      onPressed: _verification ? null : _tenterBiometrie,
+                      icon: const Icon(Icons.fingerprint),
+                      label: const Text('Déverrouiller par empreinte'),
+                    ),
+                  ),
+                if (!_biometriePossible &&
+                    !_biometrieEnCours &&
+                    _infoBiometrie != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      _infoBiometrie!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.gris,
+                      ),
+                    ),
+                  ),
                 _pave(),
                 const SizedBox(height: 8),
                 SizedBox(

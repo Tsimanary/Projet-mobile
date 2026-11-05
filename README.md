@@ -21,7 +21,7 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
 | **Lots** | Suivi des péremptions, filtres (≤ 90 j, ≤ 30 j, périmés), ordre FEFO |
 | **Sauvegarde** | Export complet **chiffré par phrase secrète** (AES-256-GCM + Argon2id), partage système, restauration transactionnelle |
 | **Utilisateurs** | Création de comptes, changement de rôle, suppression encadrée (gestionnaire) |
-| **Sécurité** | Base SQLite **chiffrée** (SQLCipher), **code d'accès** 4–6 chiffres, reverrouillage automatique |
+| **Sécurité** | Base SQLite **chiffrée** (SQLCipher), **code d'accès** 4–6 chiffres, **déverrouillage par empreinte**, reverrouillage automatique |
 
 ---
 
@@ -108,9 +108,11 @@ La CI GitHub Actions (`.github/workflows/flutter.yml`) exécute `analyze` et
 - `test/securite_test.dart` — hachage et vérification des mots de passe
 - `test/roles_test.dart` — matrice des droits, lecture des rôles, session,
   garde du dernier gestionnaire
+- `test/biometrie_test.dart` — activation, essais, repli sur le code, pannes
+  du capteur
 - `test/widget_test.dart` — démarrage de l'application
 
-**81 tests** au total (`flutter test`).
+**95 tests** au total (`flutter test`).
 
 ---
 
@@ -121,6 +123,8 @@ lib/
 ├── main.dart                 # Application (thème + écran de démarrage)
 ├── core/                     # Socle transverse
 │   ├── backup.dart           # Export / partage / restauration du fichier
+│   ├── biometrie.dart        # Politique du déverrouillage par empreinte
+│   ├── biometrie_systeme.dart # Branchement local_auth + réglage en base
 │   ├── backup_format.dart    # Format JSON versionné (pur, testable)
 │   ├── chiffrement.dart      # Enveloppe AES-256-GCM de la sauvegarde
 │   ├── coffre.dart           # Clé de chiffrement (Keystore du système)
@@ -145,7 +149,7 @@ lib/
 │                             #  sauvegarde, sécurité, utilisateurs, verrouillage)
 └── assets/images/
 
-android/                      # AGP 8.3.2, Gradle 8.4, Kotlin 1.9.22, JDK 17
+android/                      # AGP 8.3.2, Gradle 8.4, Kotlin 1.9.22, JDK 17, minSdk 24
 docs/                         # audit, corrections, sécurité, publication, confidentialité
 store/                        # icônes du Play Store (1024 et 512 px)
 ```
@@ -186,12 +190,17 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
 - Modèle de menace complet et limites : [`docs/SECURITE.md`](docs/SECURITE.md).
 - **Deux rôles** vérifiés dans la couche données : un vendeur ne peut ni
   supprimer, ni corriger, ni changer un prix, même en contournant l'interface.
-- **Aucune permission Android demandée** : l'application n'a ni accès à
-  internet, ni au stockage, ni à la localisation. Les données ne sortent du
+- **Déverrouillage par empreinte** (`local_auth`) : le capteur du système,
+  jamais le code du téléphone à la place du code de l'application ; l'option
+  ne s'active qu'après une empreinte reconnue et rend la main au code après
+  trois échecs. Le compteur anti-force-brute du code reste inchangé.
+- **Une seule permission Android** : `USE_BIOMETRIC` (permission « normale »,
+  sans dialogue à l'installation, sans accès aux données). Aucun accès à
+  internet, au stockage ou à la localisation : les données ne sortent du
   téléphone que par l'export de sauvegarde, déclenché par l'utilisateur.
 
-**Avant une mise en production** : verrouillage biométrique, blocage des
-captures d'écran (`FLAG_SECURE`).
+**Avant une mise en production** : blocage des captures d'écran
+(`FLAG_SECURE`).
 
 ---
 
@@ -207,8 +216,10 @@ captures d'écran (`FLAG_SECURE`).
   les builds sont signés avec les clés de debug.
 - **Phrase secrète de sauvegarde oubliée** = sauvegarde perdue : il n'existe
   aucune récupération (contrepartie assumée du chiffrement).
-- Pas de biométrie, pas de `FLAG_SECURE` (captures d'écran et
-  miniatures dans le sélecteur d'applications restent possibles).
+- Pas de `FLAG_SECURE` : captures d'écran et miniatures dans le sélecteur
+  d'applications restent possibles.
+- Déverrouillage biométrique **en plus** du code, jamais à sa place : pas de
+  « code de secours biométrique », et Android 7.0 minimum (`local_auth`).
 - Pas de journal d'audit consultable : la trace existe en base
   (`mouvements_stock`, colonnes `auteur`) mais n'a pas d'écran dédié.
 

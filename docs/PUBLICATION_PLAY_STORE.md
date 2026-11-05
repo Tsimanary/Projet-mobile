@@ -14,10 +14,11 @@ clé de signature (que personne d'autre que vous ne doit détenir).
 | `namespace` Android | `com.tsimanary.appharmacie` |
 | Nom affiché | **AppHarmacie** |
 | Icône | `android/app/src/main/res/mipmap-*/ic_launcher.png` (48 → 192 px) |
-| Version | `pubspec.yaml` → `version: 1.6.0+6` (`1.6.0` = nom, `6` = versionCode) |
+| Version | `pubspec.yaml` → `version: 1.7.0+7` (`1.7.0` = nom, `7` = versionCode) |
 | AGP / Gradle / Kotlin / JDK | 8.3.2 / 8.4 / 1.9.22 / 17 |
 | Signature release | lue dans `android/key.properties` s'il existe, sinon clés de debug |
-| Permissions demandées | **aucune** (pas d'internet, pas de stockage, pas de localisation) |
+| Permissions demandées | `USE_BIOMETRIC` uniquement (permission « normale » : pas de dialogue, pas d'accès aux données) ; **pas d'internet, pas de stockage, pas de localisation** |
+| Android minimum | API 24 (Android 7.0), imposé par `local_auth_android` |
 | Sauvegarde Android | désactivée (`allowBackup="false"`) |
 | Éléments Play Store prêts | `store/jeu-icone-512.png` (icône 512 × 512) |
 
@@ -137,7 +138,7 @@ C'est cette URL qu'il faut saisir dans la Play Console.
 
 ## 7. Mises à jour
 
-1. Incrémenter la version dans `pubspec.yaml` : `version: 1.7.0+7`
+1. Incrémenter la version dans `pubspec.yaml` : `version: 1.8.0+8`
    (le nombre après `+` **doit** augmenter à chaque envoi).
 2. `flutter build appbundle --release`
 3. Play Console → Piste de production → **Créer une release** → téléverser
@@ -154,8 +155,12 @@ C'est cette URL qu'il faut saisir dans la Play Console.
   évitez d'y consigner des informations médicales.
 - Si vous ajoutez plus tard un backend, la déclaration *Data safety* devra être
   mise à jour **avant** la publication.
-- Recommandé avant une utilisation réelle : chiffrement de la base
-  (`sqflite_sqlcipher`) et code d'accès obligatoire.
+- **Déjà en place** : base chiffrée (`sqflite_sqlcipher`), code d'accès,
+  sauvegardes chiffrées, rôles gestionnaire / vendeur.
+- **Biométrie** : `USE_BIOMETRIC` est une permission « normale ». Dans le
+  formulaire *Data safety*, ne déclarez **aucune** donnée biométrique
+  collectée : l'empreinte est vérifiée par le système Android, l'application
+  ne reçoit qu'un « oui » ou un « non » et ne stocke rien de biométrique.
 
 ---
 

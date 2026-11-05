@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../pages/verrouillage.dart';
+import 'biometrie.dart';
 import 'verrouillage.dart';
 
 /// Supervise la session : affiche l'écran de déverrouillage au démarrage
@@ -54,6 +55,12 @@ class _GardienSessionState extends State<GardienSession>
       // Coffre ou base indisponible : on n'enferme pas l'utilisateur dehors.
       actif = false;
     }
+
+    // La base est ouverte à ce stade : on peut relire le réglage biométrique
+    // avant d'afficher l'écran de verrouillage (sinon le bouton « empreinte »
+    // n'apparaîtrait qu'au second affichage).
+    await Biometrie.charger();
+
     if (!mounted) return;
     setState(() {
       _codeActif = actif;

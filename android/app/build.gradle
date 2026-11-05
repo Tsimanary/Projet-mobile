@@ -52,7 +52,9 @@ android {
         applicationId = "com.tsimanary.appharmacie"
         // You can update the following values to match your application needs.
         // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
-        minSdk = flutter.minSdkVersion
+        // Android 7.0 : plancher imposé par `local_auth_android`
+        // (BiometricPrompt du système). Couvre l'immense majorité du parc.
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutterVersionCode.toInteger()
         versionName = flutterVersionName

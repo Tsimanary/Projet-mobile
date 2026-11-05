@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/biometrie.dart';
 import '../core/feedback.dart';
 import '../core/session.dart';
 import '../core/theme.dart';
 import '../core/verrouillage.dart';
 import '../core/verrouillage_regles.dart';
+import '../core/widgets/confirm_dialog.dart';
 
 /// Réglages de sécurité : chiffrement de la base et code d'accès.
 class SecuritePage extends StatefulWidget {
@@ -19,6 +21,10 @@ class _SecuritePageState extends State<SecuritePage> {
   EtatVerrouillage? _etat;
   bool _occupe = false;
 
+  bool _biometrieActive = false;
+  bool _biometrieDisponible = false;
+  bool _biometrieOccupee = false;
+
   @override
   void initState() {
     super.initState();
@@ -28,11 +34,67 @@ class _SecuritePageState extends State<SecuritePage> {
   Future<void> _charger() async {
     try {
       final etat = await Verrouillage.etat();
+      await Biometrie.charger(force: true);
+      final disponible = await Biometrie.disponible();
       if (!mounted) return;
-      setState(() => _etat = etat);
+      setState(() {
+        _etat = etat;
+        _biometrieActive = Biometrie.estActive;
+        _biometrieDisponible = disponible;
+      });
     } on Exception catch (erreur) {
       if (!mounted) return;
       afficherMessage(context, 'Lecture impossible : $erreur', erreur: true);
+    }
+  }
+
+  Future<void> _basculerBiometrie(bool valeur) async {
+    if (!valeur) {
+      final confirme = await confirmerAction(
+        context,
+        titre: 'Désactiver l\'empreinte',
+        message: 'Le code d\'accès restera demandé à chaque ouverture. '
+            'Vous pourrez réactiver l\'empreinte à tout moment.',
+        libelleConfirmer: 'Désactiver',
+      );
+      if (!confirme || !mounted) return;
+
+      setState(() => _biometrieOccupee = true);
+      try {
+        await Biometrie.desactiver();
+        if (!mounted) return;
+        setState(() => _biometrieActive = false);
+        afficherMessage(context, 'Déverrouillage par empreinte désactivé.');
+      } on Exception catch (erreur) {
+        if (!mounted) return;
+        afficherMessage(context, 'Opération impossible : $erreur', erreur: true);
+      } finally {
+        if (mounted) setState(() => _biometrieOccupee = false);
+      }
+      return;
+    }
+
+    // Activation : il faut prouver que l'empreinte fonctionne avant de
+    // compter dessus.
+    setState(() => _biometrieOccupee = true);
+    try {
+      final active = await Biometrie.activer();
+      if (!mounted) return;
+      setState(() => _biometrieActive = active);
+      if (active) {
+        afficherMessage(context, 'Déverrouillage par empreinte activé.');
+      } else {
+        afficherMessage(
+          context,
+          'Activation annulée : empreinte non reconnue.',
+          erreur: true,
+        );
+      }
+    } on Exception catch (erreur) {
+      if (!mounted) return;
+      afficherMessage(context, 'Activation impossible : $erreur', erreur: true);
+    } finally {
+      if (mounted) setState(() => _biometrieOccupee = false);
     }
   }
 
@@ -246,6 +308,47 @@ class _SecuritePageState extends State<SecuritePage> {
                       trailing: const Icon(Icons.chevron_right),
                       onTap: _changer,
                     ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: const BorderSide(color: Color(0xFFE0E6E0)),
+              ),
+              child: Column(
+                children: <Widget>[
+                  SwitchListTile(
+                    value: _biometrieActive,
+                    onChanged: (!actif || !_biometrieDisponible ||
+                            _biometrieOccupee)
+                        ? null
+                        : _basculerBiometrie,
+                    secondary: Icon(
+                      Icons.fingerprint,
+                      color: _biometrieActive ? AppColors.vert : AppColors.gris,
+                    ),
+                    title: const Text('Déverrouillage par empreinte'),
+                    subtitle: Text(
+                      !actif
+                          ? 'Activez d\'abord un code d\'accès'
+                          : !_biometrieDisponible
+                              ? 'Aucune empreinte enregistrée sur cet appareil'
+                              : _biometrieActive
+                                  ? 'Proposé à l\'ouverture, avant le code'
+                                  : 'Déverrouille sans saisir le code',
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      ReglesBiometrie.explication,
+                      style: const TextStyle(fontSize: 12, color: AppColors.gris),
+                    ),
+                  ),
                 ],
               ),
             ),
