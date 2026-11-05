@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../Models/users.dart';
 import '../SQLite/sqlite.dart';
+import '../core/session.dart';
 import '../core/theme.dart';
 import '../core/validators.dart';
 import '../core/widgets/app_text_field.dart';
@@ -22,8 +23,28 @@ class _LoginPageState extends State<LoginPage> {
   final _baseDeDonnees = DatabaseHelper();
 
   bool _motDePasseVisible = false;
+  bool _premiereInstallation = false;
   bool _connexionEnCours = false;
   String? _messageErreur;
+
+  @override
+  void initState() {
+    super.initState();
+    _verifierPremiereInstallation();
+  }
+
+  /// L'inscription libre n'a de sens qu'au tout premier lancement : elle crée
+  /// le compte gestionnaire. Ensuite, seuls les gestionnaires créent des
+  /// comptes, depuis l'écran « Utilisateurs ».
+  Future<void> _verifierPremiereInstallation() async {
+    try {
+      final nombre = await _baseDeDonnees.nombreComptes();
+      if (!mounted) return;
+      setState(() => _premiereInstallation = nombre == 0);
+    } catch (_) {
+      // Base indisponible : on masque simplement l'inscription.
+    }
+  }
 
   @override
   void dispose() {
@@ -42,7 +63,7 @@ class _LoginPageState extends State<LoginPage> {
     });
 
     try {
-      final valide = await _baseDeDonnees.login(
+      final compte = await _baseDeDonnees.login(
         Users(
           usrName: _nomControleur.text.trim(),
           usrPassword: _motDePasseControleur.text,
@@ -51,13 +72,17 @@ class _LoginPageState extends State<LoginPage> {
 
       if (!mounted) return;
 
-      if (!valide) {
+      if (compte == null) {
         setState(() {
           _connexionEnCours = false;
           _messageErreur = "Nom d'utilisateur ou mot de passe incorrect.";
         });
         return;
       }
+
+      // La session porte le rôle : c'est elle qui décide des droits dans
+      // toute l'application. Sans elle, tout est verrouillé.
+      Session.ouvrir(nom: compte.usrName, role: compte.usrRole);
 
       setState(() => _connexionEnCours = false);
       Navigator.of(context).pushReplacement(
@@ -190,24 +215,28 @@ class _LoginPageState extends State<LoginPage> {
                           : const Text('SE CONNECTER'),
                     ),
                     const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: <Widget>[
-                        const Text("Pas encore de compte ?"),
-                        TextButton(
-                          onPressed: _connexionEnCours
-                              ? null
-                              : () {
-                                  Navigator.of(context).push(
-                                    MaterialPageRoute<void>(
-                                      builder: (_) => const SignUp(),
-                                    ),
-                                  );
-                                },
-                          child: const Text('CRÉER UN COMPTE'),
-                        ),
-                      ],
-                    ),
+                    if (_premiereInstallation)
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: <Widget>[
+                          const Text('Première utilisation :'),
+                          TextButton(
+                            onPressed: _connexionEnCours
+                                ? null
+                                : () {
+                                    Navigator.of(context)
+                                        .push(
+                                          MaterialPageRoute<void>(
+                                            builder: (_) => const SignUp(),
+                                          ),
+                                        )
+                                        .then((_) =>
+                                            _verifierPremiereInstallation());
+                                  },
+                            child: const Text('CRÉER LE COMPTE GESTIONNAIRE'),
+                          ),
+                        ],
+                      ),
                   ],
                 ),
               ),

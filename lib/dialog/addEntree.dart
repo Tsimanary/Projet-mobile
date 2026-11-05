@@ -1,18 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 import '../Models/entr.dart';
 import '../SQLite/sqlite.dart';
 import '../core/exceptions.dart';
 import '../core/feedback.dart';
+import '../core/format.dart';
 import '../core/validators.dart';
 import '../core/widgets/app_text_field.dart';
 
 /// Formulaire d'enregistrement d'une entrée de stock.
 ///
-/// Une entrée crée **toujours** une nouvelle ligne : l'historique des
-/// réceptions reste intact, et le stock n'est augmenté qu'une seule fois
-/// (côté base de données, dans une transaction).
+/// Une entrée crée **toujours** un mouvement et alimente un lot daté : c'est
+/// ce lot qui portera la péremption et qui sera consommé en priorité lors des
+/// ventes (FEFO).
 class AddEntree extends StatefulWidget {
   const AddEntree({super.key});
 
@@ -24,6 +24,8 @@ class _AddEntreeState extends State<AddEntree> {
   final _formKey = GlobalKey<FormState>();
   final _numeroControleur = TextEditingController();
   final _quantiteControleur = TextEditingController();
+  final _lotControleur = TextEditingController();
+  final _peremptionControleur = TextEditingController();
   final _dateControleur = TextEditingController();
   final DatabaseHelper _base = DatabaseHelper();
 
@@ -36,7 +38,8 @@ class _AddEntreeState extends State<AddEntree> {
   @override
   void initState() {
     super.initState();
-    _dateControleur.text = DateFormat('dd/MM/yyyy').format(DateTime.now());
+    final maintenant = DateTime.now();
+    _dateControleur.text = formaterDate(maintenant);
     _chargerMedicaments();
   }
 
@@ -44,6 +47,8 @@ class _AddEntreeState extends State<AddEntree> {
   void dispose() {
     _numeroControleur.dispose();
     _quantiteControleur.dispose();
+    _lotControleur.dispose();
+    _peremptionControleur.dispose();
     _dateControleur.dispose();
     super.dispose();
   }
@@ -65,16 +70,19 @@ class _AddEntreeState extends State<AddEntree> {
     }
   }
 
-  Future<void> _choisirDate() async {
+  Future<void> _choisirDate({
+    required TextEditingController controleur,
+    DateTime? initiale,
+  }) async {
     final date = await showDatePicker(
       context: context,
-      initialDate: DateTime.now(),
+      initialDate: initiale ?? DateTime.now(),
       firstDate: DateTime(2000),
       lastDate: DateTime(2101),
     );
     if (date == null || !mounted) return;
     setState(() {
-      _dateControleur.text = DateFormat('dd/MM/yyyy').format(date);
+      controleur.text = formaterDate(date);
     });
   }
 
@@ -88,12 +96,15 @@ class _AddEntreeState extends State<AddEntree> {
     setState(() => _enregistrementEnCours = true);
 
     try {
+      final numeroLot = _lotControleur.text.trim();
       await _base.insertEntree(
         Entree(
           numEntr: _numeroControleur.text.trim(),
           numMed: _medicamentSelectionne!,
           stockEntr: Validators.versEntier(_quantiteControleur.text) ?? 0,
-          dateEntr: _dateControleur.text.trim(),
+          dateEntr: versIso(_dateControleur.text) ?? _dateControleur.text.trim(),
+          numeroLot: numeroLot.isEmpty ? null : numeroLot,
+          datePeremption: versIso(_peremptionControleur.text),
         ),
       );
 
@@ -107,7 +118,11 @@ class _AddEntreeState extends State<AddEntree> {
     } catch (erreur) {
       if (!mounted) return;
       setState(() => _enregistrementEnCours = false);
-      afficherMessage(context, "Échec de l'enregistrement : $erreur", erreur: true);
+      afficherMessage(
+        context,
+        "Échec de l'enregistrement : $erreur",
+        erreur: true,
+      );
     }
   }
 
@@ -220,15 +235,43 @@ class _AddEntreeState extends State<AddEntree> {
                 ),
                 const SizedBox(height: 16),
                 ChampTexte(
-                  controleur: _dateControleur,
-                  label: "Date d'entrée",
-                  icone: Icons.calendar_today_outlined,
+                  controleur: _lotControleur,
+                  label: 'Numéro de lot (facultatif)',
+                  hint: 'Ex. : L2026-04',
+                  icone: Icons.qr_code_2,
+                ),
+                const SizedBox(height: 16),
+                ChampTexte(
+                  controleur: _peremptionControleur,
+                  label: 'Date de péremption',
+                  icone: Icons.event_busy_outlined,
                   lectureSeule: true,
-                  onTap: _choisirDate,
+                  onTap: () => _choisirDate(
+                    controleur: _peremptionControleur,
+                    initiale: DateTime.now().add(const Duration(days: 365)),
+                  ),
                   validateur: (valeur) => Validators.obligatoire(
                     valeur,
-                    champ: "La date d'entrée",
+                    champ: 'La date de péremption',
                   ),
+                ),
+                const SizedBox(height: 16),
+                ChampTexte(
+                  controleur: _dateControleur,
+                  label: "Date de réception",
+                  icone: Icons.calendar_today_outlined,
+                  lectureSeule: true,
+                  onTap: () => _choisirDate(controleur: _dateControleur),
+                  validateur: (valeur) => Validators.obligatoire(
+                    valeur,
+                    champ: 'La date de réception',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Les ventes consommeront en priorité le lot dont la '
+                  'péremption est la plus proche.',
+                  style: TextStyle(fontSize: 12, color: Colors.black54),
                 ),
                 const SizedBox(height: 24),
                 FilledButton.icon(

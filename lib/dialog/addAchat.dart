@@ -49,7 +49,7 @@ class _AddAchatState extends State<AddAchat> {
     final maintenant = DateTime.now();
     _numeroControleur.text =
         'V-${DateFormat('yyyyMMdd').format(maintenant)}-${DateFormat('HHmmss').format(maintenant)}';
-    _dateControleur.text = DateFormat('dd/MM/yyyy').format(maintenant);
+    _dateControleur.text = formaterDate(maintenant);
     _rechercheControleur.addListener(_filtrer);
     _chargerMedicaments();
   }
@@ -130,7 +130,7 @@ class _AddAchatState extends State<AddAchat> {
     );
     if (date == null || !mounted) return;
     setState(() {
-      _dateControleur.text = DateFormat('dd/MM/yyyy').format(date);
+      _dateControleur.text = formaterDate(date);
     });
   }
 
@@ -156,7 +156,7 @@ class _AddAchatState extends State<AddAchat> {
           numAchat: _numeroControleur.text.trim(),
           numMed: medicament.numMed,
           nomClient: _clientControleur.text.trim(),
-          dateAchat: _dateControleur.text.trim(),
+          dateAchat: versIso(_dateControleur.text) ?? _dateControleur.text.trim(),
           nbr: quantite,
           prixUnitaire: medicament.prixMed,
         ),
@@ -241,7 +241,7 @@ class _AddAchatState extends State<AddAchat> {
       final document = generateInvoicePdf(
         numAchat: _numeroControleur.text.trim(),
         nomClient: _clientControleur.text.trim(),
-        dateAchat: _dateControleur.text.trim(),
+        dateAchat: afficherDate(_dateControleur.text),
         lignes: lignesFacture,
         total: total,
       );

@@ -6,6 +6,7 @@ import '../core/exceptions.dart';
 import '../core/feedback.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
+import '../core/session.dart';
 import '../core/validators.dart';
 import '../core/widgets/app_text_field.dart';
 import '../core/widgets/confirm_dialog.dart';
@@ -234,24 +235,34 @@ class _AchatPageState extends State<AchatPage> {
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
                   '${achat.numMed} × ${achat.nbr} · ${achat.nomClient} · '
-                  '${achat.dateAchat}',
+                  '${afficherDate(achat.dateAchat)}',
                 ),
               ),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  IconButton(
-                    tooltip: 'Modifier',
-                    icon: const Icon(Icons.edit_outlined, color: AppColors.bleu),
-                    onPressed: () => _modifier(achat),
-                  ),
-                  IconButton(
-                    tooltip: 'Supprimer',
-                    icon: const Icon(Icons.delete_outline, color: AppColors.rouge),
-                    onPressed: () => _supprimer(achat),
-                  ),
-                ],
-              ),
+              // Le vendeur encaisse ; corriger ou supprimer reste un acte de
+              // gestion, tracé et réservé au gestionnaire.
+              trailing: Session.permissions.peutSupprimerVente
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        IconButton(
+                          tooltip: 'Modifier',
+                          icon: const Icon(
+                            Icons.edit_outlined,
+                            color: AppColors.bleu,
+                          ),
+                          onPressed: () => _modifier(achat),
+                        ),
+                        IconButton(
+                          tooltip: 'Supprimer',
+                          icon: const Icon(
+                            Icons.delete_outline,
+                            color: AppColors.rouge,
+                          ),
+                          onPressed: () => _supprimer(achat),
+                        ),
+                      ],
+                    )
+                  : null,
             ),
           );
         },
@@ -291,7 +302,8 @@ class _DialogueModificationAchatState extends State<_DialogueModificationAchat> 
     _clientControleur = TextEditingController(text: widget.achat.nomClient);
     _quantiteControleur =
         TextEditingController(text: widget.achat.nbr.toString());
-    _dateControleur = TextEditingController(text: widget.achat.dateAchat);
+    _dateControleur =
+        TextEditingController(text: afficherDate(widget.achat.dateAchat));
     _numeros = List<String>.from(widget.numerosMedicaments);
     if (!_numeros.contains(widget.achat.numMed)) {
       _numeros.insert(0, widget.achat.numMed);
@@ -333,7 +345,7 @@ class _DialogueModificationAchatState extends State<_DialogueModificationAchat> 
         numAchat: _numeroControleur.text.trim(),
         numMed: _medicamentSelectionne!,
         nomClient: _clientControleur.text.trim(),
-        dateAchat: _dateControleur.text.trim(),
+        dateAchat: versIso(_dateControleur.text) ?? _dateControleur.text.trim(),
         nbr: Validators.versEntier(_quantiteControleur.text) ?? 0,
         // Le prix figé n'est conservé que si le médicament ne change pas.
         prixUnitaire:

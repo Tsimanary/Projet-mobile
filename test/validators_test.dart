@@ -64,4 +64,36 @@ void main() {
       expect(analyserDate(''), isNull);
     });
   });
+
+  group('Dates de stockage (ISO)', () {
+    test('formaterDateIso complète les zéros', () {
+      expect(formaterDateIso(DateTime(2026, 1, 5)), '2026-01-05');
+      expect(formaterDateIso(DateTime(2026, 12, 31)), '2026-12-31');
+    });
+
+    test('versIso accepte les formats historiques et ISO', () {
+      expect(versIso('04/11/2026'), '2026-11-04');
+      expect(versIso('04/11/26'), '2026-11-04');
+      expect(versIso('2026-11-04'), '2026-11-04');
+      expect(versIso(''), isNull);
+      expect(versIso('n/c'), isNull);
+      expect(versIso(null), isNull);
+    });
+
+    test('afficherDate rend les dates lisibles', () {
+      expect(afficherDate('2026-11-04'), '04/11/2026');
+      expect(afficherDate('04/11/2026'), '04/11/2026');
+      expect(afficherDate(null), '—');
+      expect(afficherDate(''), '—');
+    });
+
+    test('joursAvant calcule l\'écart avec aujourd\'hui', () {
+      final reference = DateTime(2026, 11, 4);
+      expect(joursAvant('2026-11-14', maintenant: reference), 10);
+      expect(joursAvant('2026-11-04', maintenant: reference), 0);
+      expect(joursAvant('2026-10-04', maintenant: reference), -31);
+      expect(joursAvant(null, maintenant: reference), isNull);
+      expect(joursAvant('invalide', maintenant: reference), isNull);
+    });
+  });
 }

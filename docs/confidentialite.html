@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Politique de confidentialité — AppHarmacie</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2rem 1.25rem 4rem;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.65;
+    color: #1f2a24;
+    background: #f6f9f6;
+  }
+  main { max-width: 46rem; margin: 0 auto; background: #fff; padding: 2rem 1.75rem;
+         border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  h1 { font-size: 1.7rem; margin: 0 0 .25rem; color: #1b5e20; }
+  .maj { color: #5f6368; font-size: .9rem; margin-bottom: 1.75rem; }
+  h2 { font-size: 1.15rem; margin: 2rem 0 .5rem; color: #2e7d32; }
+  p, li { font-size: .98rem; }
+  table { width: 100%; border-collapse: collapse; margin: .75rem 0 1rem; font-size: .93rem; }
+  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid #e3ece3; vertical-align: top; }
+  th { background: #e8f5e9; color: #1b5e20; }
+  code { background: #f1f5f1; padding: .1rem .3rem; border-radius: 4px; font-size: .9em; }
+  a { color: #2e7d32; }
+  footer { text-align: center; color: #5f6368; font-size: .85rem; margin-top: 2.5rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Politique de confidentialité — AppHarmacie</h1>
+  <p class="maj">Dernière mise à jour : 5 novembre 2026</p>
+
+  <p>AppHarmacie est une application de gestion d'officine (catalogue de
+  médicaments, entrées de stock par lot, péremptions, ventes et factures PDF).</p>
+
+  <h2>1. Principe : tout reste sur votre téléphone</h2>
+  <p>L'application fonctionne <strong>entièrement hors ligne</strong>. Elle ne
+  dispose d'aucune autorisation système (ni internet, ni stockage, ni
+  localisation, ni contacts) et n'envoie aucune donnée vers un serveur : il
+  n'existe aucun serveur.</p>
+
+  <h2>2. Données enregistrées par l'application</h2>
+  <table>
+    <thead>
+      <tr><th>Donnée</th><th>Finalité</th><th>Où</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Nom du compte et mot de passe (haché avec sel)</td><td>authentification locale</td><td>base SQLite de l'application</td></tr>
+      <tr><td>Médicaments (numéro, désignation, prix, stock)</td><td>gestion du stock</td><td>idem</td></tr>
+      <tr><td>Lots (numéro, péremption, quantités) et mouvements</td><td>traçabilité, sortie FEFO</td><td>idem</td></tr>
+      <tr><td>Entrées et ventes (dates, quantités, nom du client si saisi)</td><td>historique, facturation</td><td>idem</td></tr>
+      <tr><td>Sauvegardes exportées</td><td>sauvegarde / migration</td><td>fichier choisi par l'utilisateur</td></tr>
+    </tbody>
+  </table>
+  <p>Aucune donnée n'est collectée par l'éditeur, aucun identifiant publicitaire
+  n'est utilisé, aucune analyse d'usage n'est effectuée.</p>
+
+  <h2>3. Partage</h2>
+  <p>L'application ne partage rien automatiquement. Le seul partage possible est
+  l'export de sauvegarde, <strong>déclenché par vous</strong> : le fichier est
+  transmis à l'application que vous choisissez (courriel, Drive, WhatsApp…), qui
+  applique alors sa propre politique de confidentialité.</p>
+  <p>Ce fichier contient l'intégralité de vos données (y compris les comptes
+  utilisateurs hachés). Conservez-le dans un emplacement protégé.</p>
+
+  <h2>4. Conservation et suppression</h2>
+  <p>Les données restent sur l'appareil jusqu'à ce que vous les supprimiez :</p>
+  <ul>
+    <li>suppression d'une fiche, d'une entrée ou d'une vente depuis l'application ;</li>
+    <li>écran <strong>Sauvegarde</strong> → restauration d'une sauvegarde vierge ;</li>
+    <li>désinstallation de l'application (supprime la base et les fichiers temporaires).</li>
+  </ul>
+
+  <h2>5. Sécurité</h2>
+  <ul>
+    <li>Mots de passe stockés hachés (sel aléatoire + SHA-256), jamais en clair.</li>
+    <li>Sauvegarde système Android désactivée : les données ne partent pas vers
+      Google Drive via la sauvegarde automatique.</li>
+    <li>Requêtes SQL paramétrées.</li>
+    <li>Limite connue : la base n'est pas encore chiffrée au repos ; la
+      protection repose sur le verrouillage de l'appareil. Le chiffrement et un
+      code d'accès sont planifiés.</li>
+  </ul>
+
+  <h2>6. Données de santé et données personnelles</h2>
+  <p>L'application gère des données de stock de médicaments. Si vous saisissez un
+  nom de client dans une vente, il s'agit d'une donnée personnelle : vous êtes
+  responsable de son usage et de sa conservation, conformément à la
+  réglementation applicable à Madagascar (loi n° 2014-038 sur la protection des
+  données à caractère personnel) et, le cas échéant, au RGPD pour les
+  utilisateurs de l'Union européenne.</p>
+
+  <h2>7. Vos droits</h2>
+  <p>Vous accédez à vos données, les exportez et les supprimez directement depuis
+  l'application, sans intervention de l'éditeur — celui-ci n'y ayant aucun accès.</p>
+
+  <h2>8. Mineurs</h2>
+  <p>L'application est un outil professionnel destiné aux personnels d'officine ;
+  elle ne s'adresse pas aux enfants.</p>
+
+  <h2>9. Modifications</h2>
+  <p>Toute évolution de cette politique sera publiée à cette adresse, avec la
+  date de mise à jour correspondante.</p>
+
+  <footer>AppHarmacie — application locale de gestion d'officine.</footer>
+</main>
+</body>
+</html>
