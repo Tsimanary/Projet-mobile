@@ -90,6 +90,9 @@ class Permissions {
 
   /// Code d'accès et réglages de sécurité.
   bool get peutGererSecurite => estGestionnaire;
+
+  /// Consulter le journal des mouvements et leurs auteurs (contrôle interne).
+  bool get peutConsulterJournal => estGestionnaire;
 }
 
 /// Règles de gestion des comptes.

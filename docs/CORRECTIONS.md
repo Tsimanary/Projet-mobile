@@ -728,3 +728,91 @@ safety), version `1.7.0+7`.
 - **`FLAG_SECURE`** : empêcher captures d'écran et miniatures.
 - **Écran de journal d'audit** (colonnes `auteur` déjà en base).
 - **Mesure du coût Argon2id** sur le téléphone cible.
+
+---
+
+## 16. Itération 11 — captures d'écran bloquées (`FLAG_SECURE`)
+
+### 16.1 Le problème
+
+Un téléphone prêté, une capture d'écran envoyée dans un groupe WhatsApp, une
+sauvegarde automatique de la galerie vers le cloud : en trois secondes, le
+catalogue, les prix d'achat et le chiffre d'affaires sortent de l'officine sans
+qu'aucun des trois verrous n'ait été forcé. Le fichier `.db` était protégé,
+l'écran ne l'était pas.
+
+### 16.2 Ce qui a été fait
+
+- `MainActivity.kt` : canal de plateforme `appharmacie/securite_ecran`
+  (`activer` / `desactiver`), qui pose ou retire
+  `WindowManager.LayoutParams.FLAG_SECURE` sur la fenêtre.
+- `lib/core/ecran_securise.dart` : appel depuis `main()` au démarrage ;
+  `MissingPluginException` et `PlatformException` sont absorbées — une
+  plateforme sans implémentation continue de fonctionner, sans capture
+  bloquée et sans plantage.
+- **Non réglable depuis l'application** : ce n'est pas un confort, c'est une
+  contrainte. Un garde-fou désactivable ne protège pas d'un utilisateur mal
+  intentionné.
+
+### 16.3 Effets et limites
+
+| Situation | Résultat |
+|---|---|
+| Capture d'écran | image noire |
+| Enregistrement d'écran | rectangle noir |
+| Sélecteur d'applications | aucune miniature |
+| Téléphone rooté, appareil photo, service d'accessibilité | **contournement possible** |
+
+`FLAG_SECURE` ferme la voie banale, pas toutes les voies : c'est écrit tel quel
+dans `docs/SECURITE.md` § 11.
+
+### 16.4 Tests
+
+4 tests (`test/ecran_securise_test.dart`) avec un canal simulé : drapeau posé,
+drapeau retiré, erreur de plateforme absorbée, absence d'implémentation
+absorbée.
+
+---
+
+## 17. Itération 12 — journal des mouvements
+
+### 17.1 Le problème
+
+L'itération 9 a ajouté une colonne `auteur`… que rien n'affichait. Une
+correction de prix restait donc invisible en pratique : le gestionnaire avait
+le droit de corriger, sans que personne ne puisse le constater.
+
+### 17.2 Ce qui a été fait
+
+- `Mouvement` (`lib/Models/mouvement.dart`) : quantité **signée** conservée,
+  mais affichage en valeur absolue avec le sens porté par le libellé ;
+  traduction des types (`ENTREE` → Entrée) et des références (`ACHAT:48` →
+  Vente 48) ; `auteurAffiche` affiche « compte non enregistré » plutôt que de
+  laisser croire à une ligne anonyme par choix.
+- `DatabaseHelper.listerMouvements({limite = 200})` : jointure sur
+  `achats`/`entrees` par la référence, plus la désignation du médicament.
+  Aucune duplication de colonne, donc aucune désynchronisation possible.
+  Réservé au gestionnaire (`Session.exigerGestionnaire`).
+- Écran `pages/journal.dart` : 300 derniers mouvements, filtres Tous /
+  Entrées / Sorties, auteur et horodatage sur chaque ligne, tirer pour
+  rafraîchir.
+- `home.dart` : les outils de gestion passent dans un **menu Administration**
+  (journal, utilisateurs, sécurité, sauvegarde) — cinq icônes dans la barre
+  écrasaient le titre sur un téléphone.
+- `Permissions.peutConsulterJournal` : nouveau droit, fermé par défaut comme
+  tous les autres.
+
+### 17.3 Tests et documentation
+
+6 tests (`test/journal_test.dart`) : lecture complète et incomplète,
+quantités signées, traduction des types (y compris l'inconnu), auteur absent,
+traduction des références. Matrice des droits mise à jour.
+Total du projet : **105 tests**.
+
+`docs/SECURITE.md` § 10 (journal) et § 11 (`FLAG_SECURE`), README,
+version `1.9.0+9`.
+
+### 17.4 Ce qui reste
+
+- **Mesure du coût Argon2id** sur le téléphone cible : une mesure, un réglage.
+- Traçabilité des **consultations** et des changements de compte.

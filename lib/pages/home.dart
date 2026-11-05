@@ -3,10 +3,12 @@ import 'package:flutter/material.dart';
 import '../Authentification/login.dart';
 import '../core/roles.dart';
 import '../core/session.dart';
+import '../core/theme.dart';
 import '../core/widgets/confirm_dialog.dart';
 import 'accueil.dart';
 import 'achat.dart';
 import 'entree.dart';
+import 'journal.dart';
 import 'lots.dart';
 import 'medicament.dart';
 import 'sauvegarde.dart';
@@ -118,23 +120,55 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: _entete() ?? Text(_titres[_index]),
         actions: <Widget>[
-          if (permissions.peutGererUtilisateurs)
-            IconButton(
-              tooltip: 'Utilisateurs',
-              onPressed: () => _ouvrir(const UtilisateursPage()),
-              icon: const Icon(Icons.group_outlined),
-            ),
-          if (permissions.peutGererSecurite)
-            IconButton(
-              tooltip: 'Sécurité',
-              onPressed: () => _ouvrir(const SecuritePage()),
-              icon: const Icon(Icons.lock_outline),
-            ),
-          if (permissions.peutSauvegarder)
-            IconButton(
-              tooltip: 'Sauvegarde et restauration',
-              onPressed: () => _ouvrir(const SauvegardePage()),
-              icon: const Icon(Icons.save_outlined),
+          // Les outils de gestion sont regroupés dans un menu : sur un
+          // téléphone, cinq icônes dans la barre écrasent le titre.
+          if (permissions.peutConsulterJournal ||
+              permissions.peutGererUtilisateurs ||
+              permissions.peutGererSecurite ||
+              permissions.peutSauvegarder)
+            PopupMenuButton<String>(
+              tooltip: 'Administration',
+              icon: const Icon(Icons.more_vert),
+              onSelected: (choix) {
+                if (choix == 'journal') _ouvrir(const JournalPage());
+                if (choix == 'utilisateurs') _ouvrir(const UtilisateursPage());
+                if (choix == 'securite') _ouvrir(const SecuritePage());
+                if (choix == 'sauvegarde') _ouvrir(const SauvegardePage());
+              },
+              itemBuilder: (_) => <PopupMenuEntry<String>>[
+                if (permissions.peutConsulterJournal)
+                  const PopupMenuItem<String>(
+                    value: 'journal',
+                    child: _EntreeMenu(
+                      icone: Icons.history,
+                      libelle: 'Journal des mouvements',
+                    ),
+                  ),
+                if (permissions.peutGererUtilisateurs)
+                  const PopupMenuItem<String>(
+                    value: 'utilisateurs',
+                    child: _EntreeMenu(
+                      icone: Icons.group_outlined,
+                      libelle: 'Utilisateurs',
+                    ),
+                  ),
+                if (permissions.peutGererSecurite)
+                  const PopupMenuItem<String>(
+                    value: 'securite',
+                    child: _EntreeMenu(
+                      icone: Icons.lock_outline,
+                      libelle: 'Sécurité',
+                    ),
+                  ),
+                if (permissions.peutSauvegarder)
+                  const PopupMenuItem<String>(
+                    value: 'sauvegarde',
+                    child: _EntreeMenu(
+                      icone: Icons.save_outlined,
+                      libelle: 'Sauvegarde et restauration',
+                    ),
+                  ),
+              ],
             ),
           IconButton(
             tooltip: 'Se déconnecter',
@@ -178,6 +212,25 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Ligne d'un menu déroulant : icône + libellé, alignés.
+class _EntreeMenu extends StatelessWidget {
+  const _EntreeMenu({required this.icone, required this.libelle});
+
+  final IconData icone;
+  final String libelle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: <Widget>[
+        Icon(icone, size: 20, color: AppColors.gris),
+        const SizedBox(width: 12),
+        Text(libelle),
+      ],
     );
   }
 }

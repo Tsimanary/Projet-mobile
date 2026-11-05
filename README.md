@@ -21,7 +21,8 @@ Données stockées localement (SQLite) — l'application fonctionne hors ligne.
 | **Lots** | Suivi des péremptions, filtres (≤ 90 j, ≤ 30 j, périmés), ordre FEFO |
 | **Sauvegarde** | Export complet **chiffré par phrase secrète** (AES-256-GCM + Argon2id), partage système, restauration transactionnelle |
 | **Utilisateurs** | Création de comptes, changement de rôle, suppression encadrée (gestionnaire) |
-| **Sécurité** | Base SQLite **chiffrée** (SQLCipher), **code d'accès** 4–6 chiffres, **déverrouillage par empreinte**, reverrouillage automatique |
+| **Journal** | Derniers mouvements de stock : type, quantité, référence, **auteur** et horodatage |
+| **Sécurité** | Base SQLite **chiffrée** (SQLCipher), **code d'accès** 4–6 chiffres, **déverrouillage par empreinte**, captures d'écran bloquées, reverrouillage automatique |
 
 ---
 
@@ -110,9 +111,12 @@ La CI GitHub Actions (`.github/workflows/flutter.yml`) exécute `analyze` et
   garde du dernier gestionnaire
 - `test/biometrie_test.dart` — activation, essais, repli sur le code, pannes
   du capteur
+- `test/ecran_securise_test.dart` — blocage des captures, pannes de plateforme
+- `test/journal_test.dart` — lecture et affichage des mouvements (auteur,
+  référence, quantités signées)
 - `test/widget_test.dart` — démarrage de l'application
 
-**95 tests** au total (`flutter test`).
+**105 tests** au total (`flutter test`).
 
 ---
 
@@ -127,6 +131,7 @@ lib/
 │   ├── biometrie_systeme.dart # Branchement local_auth + réglage en base
 │   ├── backup_format.dart    # Format JSON versionné (pur, testable)
 │   ├── chiffrement.dart      # Enveloppe AES-256-GCM de la sauvegarde
+│   ├── ecran_securise.dart   # FLAG_SECURE : captures et miniatures bloquées
 │   ├── coffre.dart           # Clé de chiffrement (Keystore du système)
 │   ├── gardien_session.dart  # Écran de verrouillage + reverrouillage auto
 │   ├── verrouillage.dart     # Code d'accès (empreinte, tentatives, blocage)
@@ -141,12 +146,13 @@ lib/
 │   ├── theme.dart            # Palette et thème Material 3
 │   ├── validators.dart       # Validateurs de formulaires
 │   └── widgets/              # ChampTexte, dialogue de confirmation
-├── Models/                   # Entités (Medic, Lot, Entree, Achat, Users)
+├── Models/                   # Entités (Medic, Lot, Entree, Achat, Users, Mouvement)
 ├── SQLite/sqlite.dart        # Données, transactions, lots, migrations
 ├── Authentification/         # Connexion, création de compte
 ├── dialog/                   # Formulaires (médicament, entrée, vente)
 ├── pages/                    # Écrans (accueil, médicaments, entrées, ventes, lots,
-│                             #  sauvegarde, sécurité, utilisateurs, verrouillage)
+│                             #  sauvegarde, sécurité, utilisateurs, journal,
+│                             #  verrouillage)
 └── assets/images/
 
 android/                      # AGP 8.3.2, Gradle 8.4, Kotlin 1.9.22, JDK 17, minSdk 24
@@ -194,13 +200,16 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
   jamais le code du téléphone à la place du code de l'application ; l'option
   ne s'active qu'après une empreinte reconnue et rend la main au code après
   trois échecs. Le compteur anti-force-brute du code reste inchangé.
+- **Captures d'écran bloquées** (`FLAG_SECURE`) : capture noire, pas
+  d'enregistrement d'écran, aucune miniature dans le sélecteur
+  d'applications. Non réglable depuis l'application.
 - **Une seule permission Android** : `USE_BIOMETRIC` (permission « normale »,
   sans dialogue à l'installation, sans accès aux données). Aucun accès à
   internet, au stockage ou à la localisation : les données ne sortent du
   téléphone que par l'export de sauvegarde, déclenché par l'utilisateur.
 
-**Avant une mise en production** : blocage des captures d'écran
-(`FLAG_SECURE`).
+**Avant une mise en production** : mesurer le coût Argon2id sur le téléphone
+cible (voir § 3 des limites de `docs/SECURITE.md`).
 
 ---
 
@@ -216,12 +225,13 @@ l'invariant `stockMed == Σ quantiteRestante` est vrai dès la migration.
   les builds sont signés avec les clés de debug.
 - **Phrase secrète de sauvegarde oubliée** = sauvegarde perdue : il n'existe
   aucune récupération (contrepartie assumée du chiffrement).
-- Pas de `FLAG_SECURE` : captures d'écran et miniatures dans le sélecteur
-  d'applications restent possibles.
 - Déverrouillage biométrique **en plus** du code, jamais à sa place : pas de
   « code de secours biométrique », et Android 7.0 minimum (`local_auth`).
-- Pas de journal d'audit consultable : la trace existe en base
-  (`mouvements_stock`, colonnes `auteur`) mais n'a pas d'écran dédié.
+- Le journal affiche les 300 derniers mouvements ; au-delà, il faut exporter
+  une sauvegarde (les colonnes `auteur` n'y sont pas, la traçabilité détaillée
+  reste dans la base de l'appareil).
+- Le journal ne trace pas les **consultations** (qui a regardé quoi), ni les
+  changements de rôle ou de mot de passe.
 
 Voir `docs/AUDIT_PROJET.md` (analyse initiale) et `docs/CORRECTIONS.md`
 (journal des corrections).

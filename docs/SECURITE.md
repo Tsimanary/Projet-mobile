@@ -65,6 +65,9 @@ Application  ──►  SQLCipher  ◄──  Clé 32 octets (Keystore Android)
 | Quelqu'un lit par-dessus l'épaule pendant la saisie du code | **Partiellement** | l'empreinte évite de taper le code devant témoin (§ 9) |
 | Doigt d'un tiers posé de force sur le capteur | **Non** | c'est le point faible intrinsèque de toute biométrie ; le code reste la clé, et les 3 échecs rendent la main au pavé numérique |
 | Doigt mouillé, capteur sale, capteur défaillant | Sans objet | repli automatique sur le code d'accès |
+| Capture d'écran ou enregistrement d'écran de l'application | **Oui** | `FLAG_SECURE` : image noire (§ 11) |
+| Miniature de l'application dans le sélecteur d'applications | **Oui** | `FLAG_SECURE` (§ 11) |
+| Correction d'un prix ou d'une vente sans laisser de trace | **Non** | chaque mouvement porte l'auteur et l'horodatage, consultables dans le journal (§ 10) |
 
 ---
 
@@ -308,15 +311,58 @@ d'usage — est réglable et révocable par le gestionnaire.
 
 ---
 
-## 10. Limites connues et travaux restants
+## 10. Journal des mouvements : qui a fait quoi
 
-1. **Journal d'audit** : la base conserve l'auteur d'une entrée ou d'une
-   vente (`auteur`) et le journal des mouvements, mais aucun écran ne les
-   affiche — une correction de prix reste donc invisible en pratique.
-   (Les rôles, eux, sont faits : voir § 8.)
-2. **Écran de code sans anti-capture** : une capture d'écran reste possible
-   sur les écrans de données (`FLAG_SECURE` non activé).
-3. **Paramètres Argon2id non mesurés sur matériel réel** : à chronométrer sur
+Chaque entrée et chaque sortie de stock écrit une ligne dans
+`mouvements_stock` (type, quantité signée, lot, référence `ENTREE:<id>` ou
+`ACHAT:<id>`, horodatage). Les tables `entrees` et `achats` portent en plus
+l'**auteur** du mouvement, renseigné depuis l'introduction des rôles.
+
+L'écran **Journal** (menu Administration, gestionnaire uniquement) rejoint les
+mouvements à leur auteur par la référence — sans dupliquer la colonne — et
+affiche les 300 derniers, filtrables en entrées / sorties.
+
+Pourquoi cela compte : un gestionnaire peut corriger une vente ou un prix.
+Sans trace, une correction serait indiscernable d'une erreur de saisie. Avec le
+journal, la question « qui a modifié cette vente ? » a une réponse.
+
+Ce que le journal ne dit pas : il ne trace **pas** les consultations (qui a
+regardé quoi), ni les changements de rôle, de mot de passe ou de code. Les
+lignes antérieures aux rôles — ou restaurées depuis une sauvegarde plus
+ancienne — s'affichent honnêtement « compte non enregistré » plutôt que
+d'attribuer le mouvement à quelqu'un au hasard.
+
+---
+
+## 11. Captures d'écran bloquées (`FLAG_SECURE`)
+
+L'application pose `WindowManager.LayoutParams.FLAG_SECURE` sur sa fenêtre au
+démarrage, via un canal de plateforme
+(`appharmacie/securite_ecran`, implémenté dans `MainActivity.kt`). Effets :
+
+- capture d'écran → **image noire** ;
+- enregistrement d'écran → rectangle noir sur l'application ;
+- sélecteur d'applications → **aucune miniature** du contenu.
+
+Ce n'est **pas réglable** dans l'application. Un garde-fou qu'un utilisateur
+peut désactiver ne protège pas d'un utilisateur mal intentionné, et les écrans
+contiennent des prix d'achat, des marges, des noms de clients et le chiffre
+d'affaires. Pour transmettre des chiffres, l'export de sauvegarde et la
+facture PDF restent disponibles — ils ne passent pas par une capture d'écran.
+
+Limite honnête : `FLAG_SECURE` empêche la capture **par le système**. Un
+téléphone rooté, un appareil photo braqué sur l'écran ou une application
+disposant de droits d'accessibilité contournent la protection. Elle ferme la
+voie la plus banale (capture en trois secondes, photo dans la galerie,
+sauvegarde automatique dans le cloud), pas toutes les voies.
+
+---
+
+## 12. Limites connues et travaux restants
+
+1. **Pas de trace des consultations** : le journal (§ 10) suit les
+   mouvements de stock, pas les lectures d'écran ni les changements de compte.
+2. **Paramètres Argon2id non mesurés sur matériel réel** : à chronométrer sur
    le téléphone cible ; si la vérification dépasse ~1,5 s, descendre à
    `m=12 Mio, t=2` (toujours dans les recommandations OWASP). Le chiffrement
    d'une sauvegarde bénéficie du même réglage (il est fait une fois par

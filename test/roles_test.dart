@@ -22,6 +22,7 @@ void main() {
       expect(droits.peutSauvegarder, isFalse);
       expect(droits.peutRestaurer, isFalse);
       expect(droits.peutGererSecurite, isFalse);
+      expect(droits.peutConsulterJournal, isFalse);
     });
 
     test('le gestionnaire a tous les droits', () {
@@ -39,6 +40,7 @@ void main() {
       expect(droits.peutSauvegarder, isTrue);
       expect(droits.peutRestaurer, isTrue);
       expect(droits.peutGererSecurite, isTrue);
+      expect(droits.peutConsulterJournal, isTrue);
     });
   });
 

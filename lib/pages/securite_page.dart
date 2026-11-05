@@ -354,6 +354,19 @@ class _SecuritePageState extends State<SecuritePage> {
             ),
             const SizedBox(height: 12),
             _carte(
+              titre: 'Captures d\'écran bloquées',
+              icone: Icons.screenshot_monitor,
+              couleur: AppColors.bleu,
+              texte:
+                  'L\'application pose le drapeau de sécurité de la fenêtre '
+                  '(FLAG_SECURE) : les captures d\'écran et les enregistrements '
+                  'd\'écran sont noirs, et le sélecteur d\'applications '
+                  'n\'affiche aucune miniature. Ce n\'est pas réglable — pour '
+                  'transmettre des chiffres, utilisez la facture PDF ou '
+                  'l\'export de sauvegarde.',
+            ),
+            const SizedBox(height: 12),
+            _carte(
               titre: 'Blocage automatique',
               icone: Icons.timer_outlined,
               couleur: AppColors.bleu,

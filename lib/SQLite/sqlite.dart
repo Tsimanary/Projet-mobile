@@ -9,6 +9,7 @@ import '../Models/acht.dart';
 import '../Models/entr.dart';
 import '../Models/lot.dart';
 import '../Models/medic.dart';
+import '../Models/mouvement.dart';
 import '../Models/users.dart';
 import '../core/backup_format.dart';
 import '../core/coffre.dart';
@@ -825,6 +826,34 @@ class DatabaseHelper {
       where: 'usrId = ?',
       whereArgs: <Object?>[usrId],
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Journal des mouvements
+  // ---------------------------------------------------------------------------
+
+  /// Derniers mouvements de stock, du plus récent au plus ancien.
+  ///
+  /// L'auteur est retrouvé par la référence (`ACHAT:<id>` ou `ENTREE:<id>`) :
+  /// aucune colonne dupliquée, et les mouvements antérieurs aux rôles restent
+  /// lisibles — ils s'affichent simplement « compte non enregistré ».
+  Future<List<Mouvement>> listerMouvements({int limite = 200}) async {
+    Session.exigerGestionnaire('consulter le journal des mouvements');
+    final db = await database;
+    final lignes = await db.rawQuery(
+      'SELECT m.id, m.numMed, m.type, m.quantite, m.reference, '
+      '       m.dateMouvement, '
+      '       COALESCE(a.auteur, e.auteur) AS auteur, '
+      '       d.designMed AS designMed '
+      'FROM mouvements_stock m '
+      "LEFT JOIN achats a ON m.reference = 'ACHAT:' || a.id "
+      "LEFT JOIN entrees e ON m.reference = 'ENTREE:' || e.id "
+      'LEFT JOIN medics d ON d.numMed = m.numMed '
+      'ORDER BY m.dateMouvement DESC, m.id DESC '
+      'LIMIT ?',
+      <Object?>[limite],
+    );
+    return lignes.map((ligne) => Mouvement.fromMap(ligne)).toList();
   }
 
   // ---------------------------------------------------------------------------
